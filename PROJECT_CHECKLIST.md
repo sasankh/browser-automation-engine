@@ -48,37 +48,39 @@ Lock the inputs so no later phase stalls on an unanswered question.
 
 ## Phase 1 — Skeleton (API, config, Postgres, envelope, Docker)
 
+> **Status: ✅ COMPLETE** — Plan & Verify gate passed by cold-start observation (2026-06-16), committed on branch `phase-1`. Granular tracker + Notes: [.ai-workspace/phase1_checklist.md](.ai-workspace/phase1_checklist.md). **Next: Phase 2 (on explicit go-ahead).**
+
 A running service that accepts a run, persists it, and returns an envelope — with **no browser yet**. This proves the contract and the plumbing.
 
 ### Tasks
 
 **Project setup**
-- [ ] TS + Node 24 (latest LTS) project; strict tsconfig; ESLint/Prettier; vitest or jest.
-- [ ] Fastify server; `PORT`; structured JSON logger (pino) with `run_id` scoping.
-- [ ] Dockerfile `FROM mcr.microsoft.com/playwright:<pinned>` (browser deps present even though unused this phase); `tini` as PID 1.
-- [ ] `docker-compose.yml`: engine + Postgres; `DATABASE_URL` wired; `-v ./data:/data`.
+- [x] TS + Node 24 (latest LTS) project; strict tsconfig; ESLint/Prettier; vitest or jest.
+- [x] Fastify server; `PORT`; structured JSON logger (pino) with `run_id` scoping.
+- [x] Dockerfile `FROM mcr.microsoft.com/playwright:<pinned>` (browser deps present even though unused this phase); `tini` as PID 1.
+- [x] `docker-compose.yml`: engine + Postgres; `DATABASE_URL` wired; `-v ./data:/data`.
 
 **Config**
-- [ ] `ConfigResolver`: pure per-key merge **payload.config > env > builtin default** (spec §10).
-- [ ] Implement the full env surface from spec §10 (storage, SQS placeholders, concurrency limits as values even if not yet enforced, fallback flags).
-- [ ] `effective_config` frozen onto each run and echoed in `meta`.
-- [ ] Enforce env-only keys: payload attempting to set a capacity/destination key is ignored (and logged at debug).
+- [x] `ConfigResolver`: pure per-key merge **payload.config > env > builtin default** (spec §10).
+- [x] Implement the full env surface from spec §10 (storage, SQS placeholders, concurrency limits as values even if not yet enforced, fallback flags).
+- [x] `effective_config` frozen onto each run and echoed in `meta`.
+- [x] Enforce env-only keys: payload attempting to set a capacity/destination key is ignored (and logged at debug).
 
 **Payload & envelope**
-- [ ] Zod schema for the full payload (spec §5): `instruction`, `url`, `output_format`, `playbook_id`, `playbook_version`, `data`, `config`, `callback_url`, `idempotency_key`.
-- [ ] Resolution precondition validation: reject when neither `playbook_id` nor (`instruction`+`url`) present → `validation_error`.
-- [ ] Envelope builder (`{ meta, result }`, spec §6) with all `meta` fields; `result` is caller-shape-or-null.
-- [ ] Status vocabulary + error model types (spec §7).
+- [x] Zod schema for the full payload (spec §5): `instruction`, `url`, `output_format`, `playbook_id`, `playbook_version`, `data`, `config`, `callback_url`, `idempotency_key`.
+- [x] Resolution precondition validation: reject when neither `playbook_id` nor (`instruction`+`url`) present → `validation_error`.
+- [x] Envelope builder (`{ meta, result }`, spec §6) with all `meta` fields; `result` is caller-shape-or-null.
+- [x] Status vocabulary + error model types (spec §7).
 
 **Persistence (Postgres)**
-- [ ] Migrations for `playbooks`, `playbook_versions`, `runs`, `idempotency_keys` (architecture §5.1).
-- [ ] `RunStore`: create/update run rows; status transitions.
-- [ ] `IdempotencyGuard`: `(caller, idempotency_key)` unique; repeat returns existing run's envelope.
+- [x] Migrations for `playbooks`, `playbook_versions`, `runs`, `idempotency_keys` (architecture §5.1).
+- [x] `RunStore`: create/update run rows; status transitions.
+- [x] `IdempotencyGuard`: `(caller, idempotency_key)` unique; repeat returns existing run's envelope.
 
 **Endpoints**
-- [ ] `POST /v1/runs` → validate, persist `queued`, return `202 {meta:{run_id,status}}`. (Execution stubbed: immediately marks `failed` with `not_implemented` OR echoes a canned envelope — pick one and note it.)
-- [ ] `GET /v1/runs/{run_id}` → current envelope from `RunStore`.
-- [ ] `GET /v1/health` → liveness + DB reachability (saturation fields return zeros this phase).
+- [x] `POST /v1/runs` → validate, persist `queued`, return `202 {meta:{run_id,status}}`. (Execution stubbed: marks `failed` with `internal_error` — DECISIONS #12.)
+- [x] `GET /v1/runs/{run_id}` → current envelope from `RunStore`.
+- [x] `GET /v1/health` → liveness + DB reachability (saturation fields return zeros this phase).
 
 ### Acceptance criteria
 - `docker-compose up` brings engine + Postgres healthy.

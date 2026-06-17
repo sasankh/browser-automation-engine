@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: rote
+      POSTGRES_PASSWORD: rote
+      POSTGRES_DB: rote
+    ports:
+      - '5432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rote -d rote']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  engine:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVICE_MODE: all
+      PORT: 8080
+      DATABASE_URL: postgres://rote:rote@postgres:5432/rote
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_PATH: /data
+      CACHE_BACKEND: local
+      MAX_CONCURRENT_RUNS: 3
+      MAX_QUEUE_DEPTH: 20
+      RUN_TIMEOUT_SECONDS: 180
+      MAX_RUN_TIMEOUT_SECONDS: 600
+      BROWSER_RECYCLE_RUNS: 10
+      REPLAY_LLM_FALLBACK: 'off'
+      API_AUTH_MODE: none
+    ports:
+      - '8080:8080'
+    volumes:
+      - ./data:/data
+
+volumes:
+  pgdata:
