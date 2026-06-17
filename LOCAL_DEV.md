@@ -99,6 +99,16 @@ FIXTURE_URL=http://fixture:3100 DATABASE_URL=postgres://rote:rote@localhost:5433
   STORAGE_LOCAL_PATH=./data ENGINE_URL=http://localhost:8080 npx tsx scripts/phase3-load.ts
 ```
 
+**Phase 4 in-Docker live agent gate** — a real learn→replay against the dockerized engine,
+proving the agent path works *inside* the container (Chromium-in-image, model egress).
+Needs a funded `ANTHROPIC_API_KEY` in `.env` (compose interpolates it into the engine; the
+container also gets `CHROME_PATH` + `ALLOW_PRIVATE_TARGETS`):
+
+```bash
+docker compose up --build -d
+npx tsx scripts/docker-agent-check.ts
+```
+
 ## 7. Reading what happened
 
 - **Logs:** structured JSON, `run_id`-scoped; `data` values are redacted.

@@ -36,6 +36,16 @@ services:
       BROWSER_RECYCLE_RUNS: 10
       REPLAY_LLM_FALLBACK: 'off'
       API_AUTH_MODE: none
+      # Model provider for agent mode — interpolated from the host env / .env (key stays out of the
+      # image; .env is .dockerignored). Empty when unset, so replay-only runs are unaffected.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      # Permit the in-network fixture (http://fixture:3100) as an agent target for the cold-start gate.
+      ALLOW_PRIVATE_TARGETS: 'true'
+      # Stagehand launches its own Chromium and needs the binary path (the base image ships it; auto-
+      # detection isn't enough in-container). Path is tied to the pinned playwright:v1.61.0-noble image.
+      CHROME_PATH: /ms-playwright/chromium-1228/chrome-linux/chrome
+      CHROMIUM_EXECUTABLE_PATH: /ms-playwright/chromium-1228/chrome-linux/chrome
     ports:
       - '8080:8080'
     volumes:

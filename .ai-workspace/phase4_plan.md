@@ -40,6 +40,10 @@ The expensive path: learn a task from an instruction and **compile it into a pla
 
 The engine learns once and replays free, demonstrated end-to-end: agent→compile→replay round-trip green (the permanent release-blocker test), provenance-vs-page-text green, action-only green, guardrails green, generated `vN.json` inspected for sane selectors/parameterization. **This phase's completion is fixture-complete** (DECISIONS #22); the real-site end-to-end demonstration is carried forward (see kickoff notes).
 
+**Live verification (required for the gate — both host and Docker):**
+- **Host:** `npm run test:live` (real Anthropic Sonnet) — full learn→replay round-trip green.
+- **In-container (cold-start gate):** `docker compose up --build -d` then `npx tsx scripts/docker-agent-check.ts` — the agent learns the `fixture:3100` form INSIDE the dockerized engine and the compiled playbook replays with different data + no LLM. Proves Chromium-in-image launch, model egress, and key/`/v1`-base-URL handling work in the container — not just on the host. Needs `ANTHROPIC_API_KEY` + `CHROME_PATH` in the engine container (wired in `docker-compose.yml`, key interpolated from `.env`).
+
 ## Kickoff notes (2026-06-17) — verified, then user-confirmed
 
 - **Stagehand:** latest stable `@browserbasehq/stagehand@3.5.0` (npm `latest` tag; v3 is CDP-native, `@playwright/test` is an optional peer only). Integration = Stagehand owns the agent browser (DECISIONS #21). To pin at build: `@browserbasehq/stagehand`, the Vercel AI SDK (`ai`) + `@ai-sdk/anthropic` (and `@ai-sdk/openai`/`@ai-sdk/google`/`@ai-sdk/openai-compatible` for the other providers, defined but Anthropic is the one exercised now). Our `playwright@^1.61.0` stays for replay. Re-confirm exact versions with `npm view` at install.
