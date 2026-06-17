@@ -20,7 +20,9 @@
     "migrate": "tsx src/persistence/migrate.ts"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.83",
     "@browserbasehq/stagehand": "^3.5.0",
+    "ai": "^5.0.204",
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",
     "p-queue": "^9.3.0",

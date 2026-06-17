@@ -146,6 +146,73 @@ export class PlaybookRepository {
     return next;
   }
 
+  /**
+   * Append a healed `v(n+1)` and recover health in ONE transaction (ARCHITECTURE §6.4): insert version
+   * → bump `active_version` → reset `consecutive_heal_failures` and `health='healthy'`. `created_by`
+   * is `self_heal`. A pinned-version run that heals still writes `v(n+1)` (never overwrites a slot).
+   */
+  async addVersionHealed(id: string, body: PlaybookVersion, runId: string | null): Promise<number> {
+    const head = await this.db.query<{ active_version: number }>(
+      `SELECT active_version FROM playbooks WHERE id = $1`,
+      [id],
+    );
+    const headRow = head.rows[0];
+    if (!headRow) throw new Error(`playbook not found: ${id}`);
+    const next = headRow.active_version + 1;
+    const normalized: PlaybookVersion = { ...body, version: next };
+    await this.store.writeVersionBody(id, next, normalized);
+
+    const client = await this.db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO playbook_versions (playbook_id, version, created_by, created_by_run, output_format, body_uri)
+         VALUES ($1, $2, 'self_heal', $3, $4, $5)`,
+        [id, next, runId, body.output_format ?? null, this.bodyUri(id, next)],
+      );
+      await client.query(
+        `UPDATE playbooks SET active_version = $2, consecutive_heal_failures = 0, health = 'healthy' WHERE id = $1`,
+        [id, next],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+    await this.syncMeta(id);
+    return next;
+  }
+
+  /** A heal attempt failed: bump `consecutive_heal_failures`; flag `health='unhealthy'` at the threshold. */
+  async recordHealFailure(id: string, threshold: number): Promise<void> {
+    await this.db.query(
+      `UPDATE playbooks
+       SET consecutive_heal_failures = consecutive_heal_failures + 1,
+           health = CASE WHEN consecutive_heal_failures + 1 >= $2 THEN 'unhealthy' ELSE health END
+       WHERE id = $1`,
+      [id, threshold],
+    );
+    await this.syncMeta(id);
+  }
+
+  /**
+   * Count one LLM-fallback engagement (drift visibility). When `FALLBACK_AS_DRIFT_SIGNAL` is on and the
+   * count reaches `threshold`, flag a still-`healthy` playbook `needs_relearn` (surfaced via `?health=`).
+   */
+  async recordFallbackEngagement(id: string, opts: { driftSignal: boolean; threshold: number }): Promise<void> {
+    await this.db.query(
+      `UPDATE playbooks
+       SET fallback_engaged_count = fallback_engaged_count + 1,
+           health = CASE WHEN $2 AND fallback_engaged_count + 1 >= $3 AND health = 'healthy'
+                         THEN 'needs_relearn' ELSE health END
+       WHERE id = $1`,
+      [id, opts.driftSignal, opts.threshold],
+    );
+    await this.syncMeta(id);
+  }
+
   /** Resolve which version a replay should run; null if the playbook is missing or tombstoned. */
   async resolveForReplay(id: string, pinned?: number): Promise<ResolvedPlaybook | null> {
     const res = await this.db.query<PlaybookDbRow>(`SELECT * FROM playbooks WHERE id = $1`, [id]);

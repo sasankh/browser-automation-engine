@@ -6,6 +6,8 @@ import type { PlaybookVersion } from './playbook-schema';
 import type { RunError, ExtractionError } from '../../types/errors';
 import type { RunStatus } from '../../types/run';
 import type { EvidenceStore } from '../../persistence/evidence/evidence';
+import type { LlmExtractFallback } from './llm-fallback';
+import { runLogger } from '../../shared/logger';
 
 export interface RunInput {
   runId: string;
@@ -15,6 +17,8 @@ export interface RunInput {
   data: RunData;
   defaultTimeoutMs: number;
   captureEvidence: boolean;
+  /** Surfaced LLM extraction fallback (Phase 5). Present only when REPLAY_LLM_FALLBACK=on AND a model is set. */
+  fallback?: { engine: LlmExtractFallback; model: string };
 }
 
 export interface RunOutcome {
@@ -23,6 +27,10 @@ export interface RunOutcome {
   error: RunError | null;
   extractionErrors: ExtractionError[] | null;
   evidenceCaptured: boolean;
+  /** Always surfaced (ARCHITECTURE §6.3): true iff the LLM fallback was engaged this run. */
+  llmFallbackUsed: boolean;
+  /** Fields the fallback resolved (null if it never engaged). */
+  fallbackFields: string[] | null;
 }
 
 /**
@@ -40,6 +48,8 @@ export class PlaybookRunner {
     let result: Record<string, unknown> | null = null;
     let error: RunError | null = null;
     let extractionErrors: ExtractionError[] = [];
+    let llmFallbackUsed = false;
+    let fallbackFields: string[] | null = null;
 
     try {
       for (const [index, step] of playbook.steps.entries()) {
@@ -54,6 +64,37 @@ export class PlaybookRunner {
           if (assertion.after_step === index) {
             await evaluateAssertion(assertion, index, page, defaultTimeoutMs);
           }
+        }
+      }
+
+      // Surfaced LLM extraction fallback (ARCHITECTURE §6.3): a structural miss + fallback configured
+      // → one model call for the missing fields only, always surfaced. Best-effort: a fallback error
+      // never fails the run (the structural result stands; the field stays an extraction_error).
+      if (
+        extractionErrors.length > 0 &&
+        input.fallback &&
+        playbook.playbook_type !== 'action' &&
+        playbook.output_format
+      ) {
+        llmFallbackUsed = true;
+        const missing = extractionErrors.map((e) => e.field);
+        const pageText = await page.innerText('body').catch(() => '');
+        try {
+          const { resolved } = await input.fallback.engine.extract({
+            pageText,
+            outputFormat: playbook.output_format,
+            missingFields: missing,
+            model: input.fallback.model,
+          });
+          fallbackFields = Object.keys(resolved);
+          if (fallbackFields.length > 0) {
+            result = result ?? {};
+            for (const [f, v] of Object.entries(resolved)) result[f] = v;
+            extractionErrors = extractionErrors.filter((e) => !(e.field in resolved));
+          }
+        } catch (err) {
+          fallbackFields = [];
+          runLogger(runId).warn({ err }, 'llm extraction fallback failed');
         }
       }
 
@@ -92,6 +133,8 @@ export class PlaybookRunner {
       error,
       extractionErrors: extractionErrors.length > 0 ? extractionErrors : null,
       evidenceCaptured,
+      llmFallbackUsed,
+      fallbackFields,
     };
   }
 }

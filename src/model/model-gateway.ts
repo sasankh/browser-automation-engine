@@ -1,9 +1,13 @@
+import { generateObject } from 'ai';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import type { z } from 'zod';
+
 /**
  * The single seam through which a `model` string (`provider/name`, DECISIONS #11) is resolved to a
- * concrete provider + its env-only secret. In Phase 4 this is resolution + validation only: the agent
- * path hands the resolved model/key to Stagehand (which owns the actual model call). The Phase-5
- * `LlmExtractFallback` will extend this module to build an AI-SDK client and call the model directly
- * — keeping this the ONLY place provider config/secrets are read (ARCHITECTURE §3.4, layering §3).
+ * concrete provider + its env-only secret, AND the only place provider SDKs are imported (ARCHITECTURE
+ * §3.4, layering §3). The agent path hands the resolved model/key to Stagehand (which owns that call);
+ * the Phase-5 surfaced `LlmExtractFallback` calls `extractObject()` here (Anthropic wired this phase;
+ * other providers are a thin extension to `buildModel`).
  *
  * Two rules from DECISIONS #11 are enforced here:
  *  - **Require-explicit:** there is NO built-in default model. A run that needs a model with none
@@ -93,6 +97,33 @@ export class ModelGateway {
   /** Validate-only (require-explicit) — used by the orchestrator before launching anything. */
   validate(model: string | null | undefined): void {
     this.resolve(model);
+  }
+
+  /**
+   * One structured-extraction model call (the surfaced replay fallback, ARCHITECTURE §6.3). Resolves
+   * `model` (`provider/name`, require-explicit) and runs the AI SDK's `generateObject` against the
+   * given Zod schema. This is the ONLY model call on the replay path, and it lives here so the
+   * deterministic runner never imports a provider SDK.
+   */
+  async extractObject<T>(input: { model: string | null; schema: z.ZodType<T>; prompt: string }): Promise<T> {
+    const resolved = this.resolve(input.model);
+    const { object } = await generateObject({
+      model: this.buildModel(resolved),
+      schema: input.schema,
+      prompt: input.prompt,
+    });
+    return object;
+  }
+
+  /** Build the AI-SDK language model for a resolved provider. Anthropic wired this phase. */
+  private buildModel(resolved: ResolvedModel): ReturnType<ReturnType<typeof createAnthropic>> {
+    if (resolved.provider === 'anthropic') {
+      return createAnthropic({ apiKey: resolved.apiKey, baseURL: resolved.baseURL })(resolved.modelId);
+    }
+    throw new ModelConfigError(
+      'unsupported_provider',
+      `LLM fallback is only wired for "anthropic" this phase (got "${resolved.provider}")`,
+    );
   }
 
   private providerBaseUrl(provider: ModelProvider): string | undefined {

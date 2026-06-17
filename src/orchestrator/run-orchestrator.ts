@@ -2,18 +2,22 @@ import type { EnvConfig } from '../shared/env';
 import type { RunStore } from '../persistence/runs/run-store.pg';
 import type { IdempotencyGuard } from '../intake/idempotency';
 import type { PlaybookRepository } from '../persistence/playbooks/repository';
-import type { PlaybookRunner } from '../execution/playbook/runner';
+import type { PlaybookRunner, RunOutcome } from '../execution/playbook/runner';
+import type { LlmExtractFallback } from '../execution/playbook/llm-fallback';
 import type { Lifecycle } from './lifecycle';
 import { resolveBehaviorConfig, toEffectiveConfig } from '../intake/config-resolver';
 import type { BehaviorConfig } from '../intake/config-resolver';
 import { newRunId, newPlaybookId } from '../shared/ids';
 import type { Payload } from '../intake/payload-schema';
 import type { Envelope } from '../types/envelope';
+import type { RunError } from '../types/errors';
 import type { RunData } from '../execution/playbook/step-interpreter';
 import type { PlaybookVersion } from '../execution/playbook/playbook-schema';
-import { ModelGateway, ModelConfigError } from '../model/model-gateway';
-import { AgentEngine, AgentError } from '../execution/agent/agent-engine';
+import { ModelGateway, ModelConfigError, type ResolvedModel } from '../model/model-gateway';
+import { AgentError } from '../execution/agent/agent-engine';
+import type { AgentRunner } from '../execution/agent/agent-engine';
 import { compilePlaybook } from '../execution/agent/compiler';
+import { healPolicyForError, shouldHealExtractionMiss } from './heal';
 import { runLogger } from '../shared/logger';
 
 /** With API_AUTH_MODE=none there is no caller identity — idempotency is global by key. */
@@ -35,7 +39,9 @@ export interface OrchestratorDeps {
   runner: PlaybookRunner;
   lifecycle: Lifecycle;
   modelGateway: ModelGateway;
-  agentEngine: AgentEngine;
+  agentEngine: AgentRunner;
+  /** Surfaced LLM extraction fallback (Phase 5) — engaged only when REPLAY_LLM_FALLBACK=on + a model. */
+  fallback: LlmExtractFallback;
 }
 
 /** Inputs threaded into an agent (learn) run; `relearnPlaybookId` is set only on a force-relearn. */
@@ -110,7 +116,7 @@ export class RunOrchestrator {
         if (finalRunId !== runId) return { kind: 'accepted', run_id: finalRunId };
 
         consumed = true; // executePlaybook now owns the reservation (released when the run settles)
-        void this.executePlaybook(runId, body, data, behavior);
+        void this.executePlaybook(runId, payload.playbook_id, resolved.version, body, data, behavior);
         return { kind: 'accepted', run_id: runId };
       }
 
@@ -169,6 +175,8 @@ export class RunOrchestrator {
 
   private async executePlaybook(
     runId: string,
+    playbookId: string,
+    version: number,
     body: PlaybookVersion,
     data: RunData,
     behavior: BehaviorConfig,
@@ -186,23 +194,42 @@ export class RunOrchestrator {
             data,
             defaultTimeoutMs: DEFAULT_STEP_TIMEOUT_MS,
             captureEvidence: behavior.evidence_capture,
+            fallback: this.replayFallback(behavior),
           });
         },
       );
 
       if (outcome.kind === 'timeout') {
+        // `timeout` is never-heal (§7) — surface it.
         await this.deps.runs.finishRun(runId, {
           status: 'failed',
           error: { code: 'timeout', message: `run exceeded ${behavior.run_timeout_seconds}s wall clock` },
         });
-      } else {
-        const o = outcome.value;
-        await this.deps.runs.finishRun(runId, {
-          status: o.status,
-          result: o.result,
-          error: o.error,
-          extractionErrors: o.extractionErrors,
-          evidenceCaptured: o.evidenceCaptured,
+        return;
+      }
+
+      const o = outcome.value;
+      if (this.wantsHeal(o, behavior)) {
+        await this.healRun(runId, playbookId, data, behavior, o);
+        return;
+      }
+
+      // No heal: persist the replay outcome (incl. the surfaced fallback flags).
+      await this.deps.runs.finishRun(runId, {
+        status: o.status,
+        result: o.result,
+        error: this.markHealEligibleButDisabled(o, behavior),
+        extractionErrors: o.extractionErrors,
+        evidenceCaptured: o.evidenceCaptured,
+        playbookId,
+        playbookVersion: version,
+        llmFallbackUsed: o.llmFallbackUsed || null,
+        fallbackFields: o.fallbackFields,
+      });
+      if (o.llmFallbackUsed) {
+        await this.deps.playbooks.recordFallbackEngagement(playbookId, {
+          driftSignal: this.deps.env.fallbackAsDriftSignal,
+          threshold: this.deps.env.fallbackDriftThreshold,
         });
       }
     } catch (err) {
@@ -213,6 +240,140 @@ export class RunOrchestrator {
           error: { code: 'internal_error', message: `run crashed: ${String(err)}` },
         })
         .catch(() => undefined);
+    } finally {
+      this.deps.lifecycle.releaseReservation(); // released ONCE per run (after any heal — DECISIONS #28)
+    }
+  }
+
+  /** The replay fallback engine + model, or undefined when REPLAY_LLM_FALLBACK is off / no model set. */
+  private replayFallback(behavior: BehaviorConfig): { engine: LlmExtractFallback; model: string } | undefined {
+    if (behavior.replay_llm_fallback === 'on' && behavior.replay_llm_fallback_model) {
+      return { engine: this.deps.fallback, model: behavior.replay_llm_fallback_model };
+    }
+    return undefined;
+  }
+
+  /** Does this replay outcome escalate to a self-heal (per §7 + config)? */
+  private wantsHeal(o: RunOutcome, behavior: BehaviorConfig): boolean {
+    if (!behavior.playbook_self_heal) return false;
+    const opts = { selfHealOnExtractionFailure: behavior.self_heal_on_extraction_failure };
+    if (o.status === 'failed' && o.error) return healPolicyForError(o.error.code, opts) === 'heal';
+    // Fallback-first-then-heal (DECISIONS #26): a still-missing extraction escalates only if configured.
+    if (o.status === 'completed_with_extraction_errors') return shouldHealExtractionMiss(opts);
+    return false;
+  }
+
+  /** Tag a non-healed failure that WAS heal-eligible but self-heal was disabled (`heal_attempted:false`). */
+  private markHealEligibleButDisabled(o: RunOutcome, behavior: BehaviorConfig): RunError | null {
+    if (o.status !== 'failed' || !o.error) return o.error;
+    const opts = { selfHealOnExtractionFailure: behavior.self_heal_on_extraction_failure };
+    if (!behavior.playbook_self_heal && healPolicyForError(o.error.code, opts) === 'heal') {
+      return { ...o.error, heal_attempted: false };
+    }
+    return o.error;
+  }
+
+  /**
+   * Self-heal (ARCHITECTURE §6.4, PROJECT_SPEC §9.3): the SAME run continues in agent mode against the
+   * stored instruction/url, compiles a healed `v(n+1)` (Postgres TXN resets the heal counter), and the
+   * envelope carries `mode=agent`, `self_healed=true`, and the new version. A heal that fails bumps
+   * `consecutive_heal_failures` (→ `health=unhealthy` at the threshold) and surfaces `heal_attempted`.
+   */
+  private async healRun(
+    runId: string,
+    playbookId: string,
+    data: RunData,
+    behavior: BehaviorConfig,
+    failure: RunOutcome,
+  ): Promise<void> {
+    const baseError: RunError = failure.error ?? { code: 'step_failed', message: 'replay failed' };
+    const contract = await this.deps.playbooks.getContract(playbookId);
+    if (!contract) {
+      await this.deps.runs.finishRun(runId, {
+        status: 'failed',
+        error: { ...baseError, heal_attempted: false, heal_outcome: 'playbook_not_found' },
+      });
+      return;
+    }
+    // Heal is an agent run → require-explicit model. None resolved → can't heal; surface cleanly.
+    let model: ResolvedModel;
+    try {
+      model = this.deps.modelGateway.resolve(behavior.model);
+    } catch {
+      await this.deps.runs.finishRun(runId, {
+        status: 'failed',
+        error: { ...baseError, heal_attempted: false, heal_outcome: 'no_model_configured' },
+      });
+      return;
+    }
+
+    runLogger(runId).info({ playbook_id: playbookId, failed_with: baseError.code }, 'self-heal triggered');
+    try {
+      const outcome = await this.deps.lifecycle.executeAgent(
+        behavior.run_timeout_seconds * 1000,
+        async (signal) =>
+          this.deps.agentEngine.run({
+            runId,
+            instruction: contract.instruction,
+            url: contract.url,
+            data,
+            outputFormat: contract.output_format,
+            config: {
+              model,
+              agentMaxSteps: behavior.agent_max_steps,
+              headless: behavior.headless,
+              allowOffsite: behavior.allow_offsite,
+              proxyEnabled: behavior.proxy_enabled,
+              captureEvidence: behavior.evidence_capture,
+            },
+            signal,
+          }),
+      );
+
+      if (outcome.kind === 'timeout') {
+        await this.deps.playbooks.recordHealFailure(playbookId, this.deps.env.healFailureThreshold);
+        await this.deps.runs.finishRun(runId, {
+          status: 'failed',
+          mode: 'agent',
+          selfHealed: true,
+          error: { ...baseError, heal_attempted: true, heal_outcome: 'heal_timed_out' },
+        });
+        return;
+      }
+
+      const learn = outcome.value;
+      const healedBody = compilePlaybook({
+        recorded: learn.recorded,
+        outputFormat: contract.output_format,
+        extractionFields: learn.extractionFields,
+        scopeSelector: learn.scopeSelector,
+      });
+      const newVersion = await this.deps.playbooks.addVersionHealed(playbookId, healedBody, runId);
+      const hasErrors = learn.extractionErrors.length > 0;
+      await this.deps.runs.finishRun(runId, {
+        status: hasErrors ? 'completed_with_extraction_errors' : 'completed',
+        result: learn.result,
+        extractionErrors: hasErrors ? learn.extractionErrors : null,
+        evidenceCaptured: behavior.evidence_capture,
+        mode: 'agent',
+        selfHealed: true,
+        playbookId,
+        playbookVersion: newVersion,
+      });
+      runLogger(runId).info(
+        { playbook_id: playbookId, version: newVersion, usage: learn.usage },
+        'self-heal compiled a new version',
+      );
+    } catch (err) {
+      const healOutcome = err instanceof AgentError ? err.code : String(err);
+      await this.deps.playbooks.recordHealFailure(playbookId, this.deps.env.healFailureThreshold);
+      await this.deps.runs.finishRun(runId, {
+        status: 'failed',
+        mode: 'agent',
+        selfHealed: true,
+        error: { ...baseError, heal_attempted: true, heal_outcome: healOutcome },
+      });
+      runLogger(runId).error({ err, playbook_id: playbookId }, 'self-heal failed');
     }
   }
 
@@ -303,6 +464,8 @@ export class RunOrchestrator {
           : { code: 'internal_error' as const, message: `agent run crashed: ${String(err)}` };
       runLogger(runId).error({ err }, 'agent run failed');
       await this.deps.runs.finishRun(runId, { status: 'failed', error }).catch(() => undefined);
+    } finally {
+      this.deps.lifecycle.releaseReservation(); // released ONCE per run (DECISIONS #28)
     }
   }
 }

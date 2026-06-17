@@ -17,9 +17,12 @@ import { BrowserPool } from '../../src/browser/pool';
 import { Lifecycle } from '../../src/orchestrator/lifecycle';
 import { ModelGateway } from '../../src/model/model-gateway';
 import { AgentEngine } from '../../src/execution/agent/agent-engine';
+import { ModelGatewayFallback } from '../../src/execution/playbook/llm-fallback';
 import { LocalSelectorCache } from '../../src/persistence/cache/selector-cache';
 import { RunOrchestrator } from '../../src/orchestrator/run-orchestrator';
 import { buildServer } from '../../src/transport/http-server';
+import { newPlaybookId } from '../../src/shared/ids';
+import type { PlaybookVersion } from '../../src/execution/playbook/playbook-schema';
 
 /**
  * THE Phase-4 release-blocker, full form: a real agent LEARNS a task from an instruction, compiles a
@@ -30,6 +33,7 @@ import { buildServer } from '../../src/transport/http-server';
  */
 const RUN_LIVE = Boolean(process.env.ANTHROPIC_API_KEY);
 const MODEL = process.env.AGENT_MODEL ?? 'anthropic/claude-sonnet-4-6';
+const FALLBACK_MODEL = process.env.FALLBACK_MODEL ?? 'anthropic/claude-haiku-4-5';
 const TEST_DB = process.env.TEST_DATABASE_URL ?? 'postgres://rote:rote@localhost:5433/rote';
 const suite = RUN_LIVE ? describe : describe.skip;
 
@@ -37,6 +41,7 @@ let fixture: FixtureHandle;
 let db: Db;
 let app: FastifyInstance;
 let pool: BrowserPool;
+let playbooks: PlaybookRepository;
 let tmp: string;
 
 beforeAll(async () => {
@@ -48,7 +53,7 @@ beforeAll(async () => {
   const env = loadEnvConfig({ DATABASE_URL: TEST_DB, STORAGE_LOCAL_PATH: tmp, PORT: '0' } as NodeJS.ProcessEnv);
   db = createDb(env);
   await runMigrations(db);
-  const playbooks = new PlaybookRepository(db, new LocalPlaybookStore(env.storageLocalPath));
+  playbooks = new PlaybookRepository(db, new LocalPlaybookStore(env.storageLocalPath));
   const evidence = new LocalEvidenceStore(env.storageLocalPath);
   pool = new BrowserPool(env.browserRecycleRuns);
   const lifecycle = new Lifecycle(pool, env.maxConcurrentRuns, env.maxQueueDepth);
@@ -62,6 +67,7 @@ beforeAll(async () => {
     lifecycle,
     modelGateway: new ModelGateway(nodeEnv),
     agentEngine: new AgentEngine({ evidence, selectorCache: new LocalSelectorCache(env.storageLocalPath), env: nodeEnv }),
+    fallback: new ModelGatewayFallback(new ModelGateway(nodeEnv)),
   });
   app = buildServer({ db, orchestrator, playbooks, evidence, lifecycle });
   await app.ready();
@@ -76,7 +82,15 @@ afterAll(async () => {
 });
 
 interface Envelope {
-  meta: { status: string; mode: string | null; playbook_id: string | null; playbook_version: number | null };
+  meta: {
+    status: string;
+    mode: string | null;
+    playbook_id: string | null;
+    playbook_version: number | null;
+    self_healed: boolean;
+    llm_fallback_used: boolean;
+    fallback_fields: string[] | null;
+  };
   result: Record<string, unknown> | null;
 }
 
@@ -127,5 +141,91 @@ suite('Phase 4 — learn → replay round-trip (LIVE agent)', () => {
       expect(replay.result).toMatchObject({ license_status: 'active', holder_name: 'OKONKWO, Z999000' });
     },
     240_000,
+  );
+});
+
+async function seedLive(body: PlaybookVersion, url: string): Promise<string> {
+  const id = newPlaybookId();
+  await playbooks.create({ id, url, instruction: 'look up a license by number and last name, then read the result', createdBy: 'manual', runId: null, body });
+  return id;
+}
+
+suite('Phase 5 — self-heal & surfaced fallback (LIVE)', () => {
+  it(
+    'a playbook broken by a site redesign self-heals: replay fails → agent learns v2 → v2 replays cleanly',
+    async () => {
+      // v1 uses the ORIGINAL selectors but points at the MUTATED /v2 site (renamed selectors) → step_failed.
+      const stale: PlaybookVersion = {
+        version: 1,
+        engine_min_version: '1.0.0',
+        playbook_type: 'extraction',
+        output_format: { license_status: 'string', holder_name: 'string' },
+        required_data_keys: ['license_number', 'last_name'],
+        steps: [
+          { op: 'goto', url: `${fixture.url}/v2/lookup` },
+          { op: 'fill', selector: '#licNum', value: '{{data.license_number}}', timeout_ms: 4000 }, // gone on /v2
+          { op: 'fill', selector: '#lastNm', value: '{{data.last_name}}' },
+          { op: 'click', selector: '#submit' },
+          { op: 'wait_for', selector: '.results-table' },
+          { op: 'extract', schema_ref: 'output_format', scope_selector: '.results-table', fields: { license_status: '.status', holder_name: '.holder' } },
+        ],
+      };
+      const id = await seedLive(stale, `${fixture.url}/v2/lookup`);
+
+      const healed = await poll(
+        await submit({ playbook_id: id, data: { license_number: 'A123456', last_name: 'Nguyen' }, config: { playbook_self_heal: true, model: MODEL } }),
+      );
+      expect(healed.meta.status).toBe('completed');
+      expect(healed.meta.self_healed).toBe(true);
+      expect(healed.meta.mode).toBe('agent');
+      expect(healed.meta.playbook_version).toBe(2);
+      expect(healed.result).toMatchObject({ license_status: 'active' });
+
+      // v2 (healed) now replays on the mutated site with DIFFERENT data, deterministically, no LLM.
+      const replay = await poll(
+        await submit({ playbook_id: id, data: { license_number: 'B55', last_name: 'Okonkwo' } }),
+        30_000,
+      );
+      expect(replay.meta.status).toBe('completed');
+      expect(replay.meta.mode).toBe('playbook');
+      expect(replay.result).toMatchObject({ license_status: 'active', holder_name: 'OKONKWO, B55' });
+    },
+    240_000,
+  );
+
+  it(
+    'a structural extraction miss is rescued by the surfaced LLM fallback (Haiku), always counted',
+    async () => {
+      // Good lookup flow, but the holder_name extract selector is wrong → structural miss on that field.
+      const body: PlaybookVersion = {
+        version: 1,
+        engine_min_version: '1.0.0',
+        playbook_type: 'extraction',
+        output_format: { license_status: 'string', holder_name: 'string' },
+        required_data_keys: ['license_number', 'last_name'],
+        steps: [
+          { op: 'goto', url: `${fixture.url}/lookup` },
+          { op: 'fill', selector: '#licNum', value: '{{data.license_number}}' },
+          { op: 'fill', selector: '#lastNm', value: '{{data.last_name}}' },
+          { op: 'click', selector: '#submit' },
+          { op: 'wait_for', selector: '.results-table' },
+          { op: 'extract', schema_ref: 'output_format', scope_selector: '.results-table', fields: { license_status: '.status', holder_name: '.no-such-selector' } },
+        ],
+      };
+      const id = await seedLive(body, `${fixture.url}/lookup`);
+      const env = await poll(
+        await submit({
+          playbook_id: id,
+          data: { license_number: 'A123456', last_name: 'Nguyen' },
+          config: { replay_llm_fallback: 'on', replay_llm_fallback_model: FALLBACK_MODEL },
+        }),
+        60_000,
+      );
+      expect(env.meta.llm_fallback_used).toBe(true);
+      expect(env.meta.fallback_fields).toContain('holder_name');
+      expect(env.meta.status).toBe('completed');
+      expect(String(env.result?.holder_name)).toContain('NGUYEN');
+    },
+    120_000,
   );
 });

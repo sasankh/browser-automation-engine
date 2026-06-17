@@ -12,6 +12,7 @@ import { BrowserPool } from './browser/pool';
 import { Lifecycle } from './orchestrator/lifecycle';
 import { ModelGateway } from './model/model-gateway';
 import { AgentEngine } from './execution/agent/agent-engine';
+import { ModelGatewayFallback } from './execution/playbook/llm-fallback';
 import { LocalSelectorCache } from './persistence/cache/selector-cache';
 import { RunOrchestrator } from './orchestrator/run-orchestrator';
 import { buildServer } from './transport/http-server';
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
     lifecycle,
     modelGateway,
     agentEngine,
+    fallback: new ModelGatewayFallback(modelGateway),
   });
 
   const app = buildServer({ db, orchestrator, playbooks, evidence, lifecycle });

@@ -60,39 +60,37 @@ export class Lifecycle {
   }
 
   /**
-   * Run gated work on a fresh context under the wall clock. Consumes one reservation made by
-   * tryReserve() (released when the run settles). On timeout the context is closed and the page's
-   * in-flight ops abort; the outcome is reported as `timeout`.
+   * Run gated work on a fresh context under the wall clock. This manages only the queue slot
+   * (concurrency) + the timeout — the `tryReserve()` reservation is released ONCE per run by the
+   * orchestrator (a self-heal runs a SECOND gated execution on the same run, so releasing here would
+   * double-release — DECISIONS #28). On timeout the context is closed and the page's in-flight ops
+   * abort; the outcome is reported as `timeout`.
    */
   async execute<T>(
     headless: boolean,
     timeoutMs: number,
     work: (page: Page) => Promise<T>,
   ): Promise<ExecOutcome<T>> {
-    try {
-      const settled = (await this.queue.add(async (): Promise<ExecOutcome<T>> => {
-        const ctx = await this.pool.acquire(headless);
-        let timer: NodeJS.Timeout | undefined;
-        try {
-          const workP = work(ctx.page).then((value): ExecOutcome<T> => ({ kind: 'done', value }));
-          // The losing promise keeps running until the closed context makes it throw — swallow it.
-          workP.catch(() => undefined);
-          const timeoutP = new Promise<ExecOutcome<T>>((resolve) => {
-            timer = setTimeout(() => {
-              void ctx.release();
-              resolve({ kind: 'timeout' });
-            }, timeoutMs);
-          });
-          return await Promise.race([workP, timeoutP]);
-        } finally {
-          if (timer) clearTimeout(timer);
-          await ctx.release();
-        }
-      })) as ExecOutcome<T> | undefined;
-      return settled ?? { kind: 'timeout' };
-    } finally {
-      this.releaseReservation();
-    }
+    const settled = (await this.queue.add(async (): Promise<ExecOutcome<T>> => {
+      const ctx = await this.pool.acquire(headless);
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const workP = work(ctx.page).then((value): ExecOutcome<T> => ({ kind: 'done', value }));
+        // The losing promise keeps running until the closed context makes it throw — swallow it.
+        workP.catch(() => undefined);
+        const timeoutP = new Promise<ExecOutcome<T>>((resolve) => {
+          timer = setTimeout(() => {
+            void ctx.release();
+            resolve({ kind: 'timeout' });
+          }, timeoutMs);
+        });
+        return await Promise.race([workP, timeoutP]);
+      } finally {
+        if (timer) clearTimeout(timer);
+        await ctx.release();
+      }
+    })) as ExecOutcome<T> | undefined;
+    return settled ?? { kind: 'timeout' };
   }
 
   /**
@@ -104,29 +102,27 @@ export class Lifecycle {
     timeoutMs: number,
     work: (signal: AbortSignal) => Promise<T>,
   ): Promise<ExecOutcome<T>> {
-    try {
-      const settled = (await this.queue.add(async (): Promise<ExecOutcome<T>> => {
-        const ac = new AbortController();
-        let timer: NodeJS.Timeout | undefined;
-        try {
-          const workP = work(ac.signal).then((value): ExecOutcome<T> => ({ kind: 'done', value }));
-          workP.catch(() => undefined);
-          const timeoutP = new Promise<ExecOutcome<T>>((resolve) => {
-            timer = setTimeout(() => {
-              ac.abort();
-              resolve({ kind: 'timeout' });
-            }, timeoutMs);
-          });
-          return await Promise.race([workP, timeoutP]);
-        } finally {
-          if (timer) clearTimeout(timer);
-          ac.abort(); // ensure the agent tears down if it is somehow still running
-        }
-      })) as ExecOutcome<T> | undefined;
-      return settled ?? { kind: 'timeout' };
-    } finally {
-      this.releaseReservation();
-    }
+    // Manages only the queue slot + wall clock; the reservation is released once per run by the
+    // orchestrator (this is the SECOND gated execution on a healing run — DECISIONS #28).
+    const settled = (await this.queue.add(async (): Promise<ExecOutcome<T>> => {
+      const ac = new AbortController();
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const workP = work(ac.signal).then((value): ExecOutcome<T> => ({ kind: 'done', value }));
+        workP.catch(() => undefined);
+        const timeoutP = new Promise<ExecOutcome<T>>((resolve) => {
+          timer = setTimeout(() => {
+            ac.abort();
+            resolve({ kind: 'timeout' });
+          }, timeoutMs);
+        });
+        return await Promise.race([workP, timeoutP]);
+      } finally {
+        if (timer) clearTimeout(timer);
+        ac.abort(); // ensure the agent tears down if it is somehow still running
+      }
+    })) as ExecOutcome<T> | undefined;
+    return settled ?? { kind: 'timeout' };
   }
 
   /** Stop admitting new work and wait for in-flight runs to settle, up to the grace window. */

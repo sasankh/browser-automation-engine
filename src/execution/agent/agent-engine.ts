@@ -55,13 +55,18 @@ export interface AgentEngineDeps {
   env: NodeJS.ProcessEnv;
 }
 
+/** The orchestrator depends on this narrow surface, so heal/learn tests can inject a fake (no LLM). */
+export interface AgentRunner {
+  run(input: AgentRunInput): Promise<AgentLearnResult>;
+}
+
 /**
  * The expensive path (PROJECT_SPEC §9.1): Stagehand v3.5 drives the task from a natural-language
  * instruction, we record the effective actions (with `data` provenance) for the compiler, extract the
  * result, and capture evidence. Stagehand owns its own CDP browser (DECISIONS #21) — one instance per
  * run, disposed in `finally`. This is the ONLY module that imports Stagehand.
  */
-export class AgentEngine {
+export class AgentEngine implements AgentRunner {
   constructor(private readonly deps: AgentEngineDeps) {}
 
   async run(input: AgentRunInput): Promise<AgentLearnResult> {

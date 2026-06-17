@@ -109,6 +109,15 @@ docker compose up --build -d
 npx tsx scripts/docker-agent-check.ts
 ```
 
+**Phase 5 in-Docker self-heal + fallback gate** — a real mutate→heal→v2-replay and a surfaced
+LLM fallback against the dockerized engine (same `ANTHROPIC_API_KEY` prereq):
+
+```bash
+docker compose up --build -d
+FIXTURE_URL=http://fixture:3100 DATABASE_URL=postgres://rote:rote@localhost:5433/rote \
+  STORAGE_LOCAL_PATH=./data npx tsx scripts/docker-heal-check.ts
+```
+
 ## 7. Reading what happened
 
 - **Logs:** structured JSON, `run_id`-scoped; `data` values are redacted.

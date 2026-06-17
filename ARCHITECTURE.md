@@ -298,6 +298,7 @@ The fallback exists so a minor layout shift doesn't force a full heal, but it mu
 - If the LLM fallback itself can't resolve a field → that field is an extraction error as normal.
 - A run that needed the fallback is `completed` (data is correct) but is **counted in metrics** (`fallback_engaged_total`, per-playbook) so a playbook quietly drifting toward obsolescence is visible. Optional: `FALLBACK_AS_DRIFT_SIGNAL=on` flags the playbook for proactive re-learn after K fallback engagements.
 - Config keys: `REPLAY_LLM_FALLBACK` (on|off, env; payload-overridable as `config.replay_llm_fallback`), `REPLAY_LLM_FALLBACK_MODEL` (env; payload-overridable as `config.replay_llm_fallback_model`).
+- **As built (Phase 5):** the fallback runs via the `ModelGateway` (`generateObject`, Anthropic wired) and is **fallback-first-then-heal** — a miss still present after the fallback escalates to self-heal (§6.4) only if `self_heal_on_extraction_failure` (DECISIONS #26). `fallback_engaged_total` is a **persistent per-playbook DB count** (`playbooks.fallback_engaged_count`); `FALLBACK_AS_DRIFT_SIGNAL=on` flags `health='needs_relearn'` after `FALLBACK_DRIFT_THRESHOLD` engagements. Prometheus export is deferred to the observability work.
 
 ### 6.4 Self-heal
 

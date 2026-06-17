@@ -246,6 +246,8 @@ Now the expensive path: learn a task from an instruction and **compile it into a
 
 ## Phase 5 — Self-Heal & Surfaced LLM Extraction Fallback
 
+> **Status: ✅ COMPLETE — live-verified** — Plan & Verify gate passed by observation (2026-06-17). Offline (74 tests, 3 live-skipped): exhaustive §7 heal-classification table, heal success/config-off/extraction-miss/unhealthy-flag/pinned-heal (fake agent), fallback on/off (fake fallback). **LIVE (`npm run test:live`, real Anthropic):** mutate→heal→v2-replay GREEN (v1 broken on the /v2 site → agent learns v2 → v2 replays) + surfaced Haiku fallback GREEN. **In-container (`scripts/docker-heal-check.ts`):** self-heal + fallback PASS. Cost: heal ≈ 10k tokens, fallback ≈ one small Haiku call, replay = 0. Extraction-miss precedence = fallback-first-then-heal (DECISIONS #26); reservation released once-per-run (#28). Granular tracker + Notes: [.ai-workspace/phase5_checklist.md](.ai-workspace/phase5_checklist.md). **Next: Phase 6 (on explicit go-ahead).**
+
 Two resilience mechanisms that both lean on Phases 2+4. Self-heal = runner failure → agent → new version. LLM fallback = structural extraction miss → one-shot model extract, always surfaced.
 
 ### Tasks

@@ -21,6 +21,10 @@ export interface EnvConfig {
   browserRecycleRuns: number;
   shutdownGraceSeconds: number;
   authMode: AuthMode;
+  // Self-heal & fallback-drift (Phase 5).
+  healFailureThreshold: number; // consecutive heal failures before health=unhealthy
+  fallbackAsDriftSignal: boolean; // flag a playbook for re-learn after K fallback engagements
+  fallbackDriftThreshold: number; // K
 }
 
 function intEnv(env: NodeJS.ProcessEnv, key: string, def: number): number {
@@ -29,6 +33,12 @@ function intEnv(env: NodeJS.ProcessEnv, key: string, def: number): number {
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 0) throw new Error(`Invalid integer env ${key}: ${raw}`);
   return n;
+}
+
+function boolEnv(env: NodeJS.ProcessEnv, key: string, def: boolean): boolean {
+  const raw = env[key];
+  if (raw === undefined || raw === '') return def;
+  return raw === 'true' || raw === '1' || raw === 'on';
 }
 
 function oneOf<T extends string>(env: NodeJS.ProcessEnv, key: string, allowed: readonly T[], def: T): T {
@@ -57,5 +67,8 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): EnvConfig {
     browserRecycleRuns: intEnv(env, 'BROWSER_RECYCLE_RUNS', 10),
     shutdownGraceSeconds: intEnv(env, 'SHUTDOWN_GRACE_SECONDS', 25),
     authMode: oneOf(env, 'API_AUTH_MODE', ['none', 'api_key', 'hmac'] as const, 'none'),
+    healFailureThreshold: intEnv(env, 'HEAL_FAILURE_THRESHOLD', 3),
+    fallbackAsDriftSignal: boolEnv(env, 'FALLBACK_AS_DRIFT_SIGNAL', false),
+    fallbackDriftThreshold: intEnv(env, 'FALLBACK_DRIFT_THRESHOLD', 5),
   });
 }
