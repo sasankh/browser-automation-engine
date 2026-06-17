@@ -156,9 +156,9 @@ Webhooks fire only on **terminal** states.
 
 ## 6. Config overrides (payload `config`)
 
-Resolution per key: **payload `config` > env > built-in default** (`PROJECT_SPEC.md` §10). Overridable (behavior) keys include: `playbook_self_heal`, `self_heal_on_extraction_failure`, `run_timeout_seconds` (capped by `MAX_RUN_TIMEOUT_SECONDS`), `agent_max_steps`, `model`, `evidence_capture`, `evidence_inline`, `proxy_enabled`, `headless`, `allow_offsite`, `replay_llm_fallback` (+ model), `force_relearn`.
+Resolution per key: **payload `config` > env > built-in default** (`PROJECT_SPEC.md` §10). Overridable (behavior) keys include: `playbook_self_heal`, `self_heal_on_extraction_failure`, `run_timeout_seconds` (capped by `MAX_RUN_TIMEOUT_SECONDS`), `agent_max_steps`, `model` (`provider/name`, **required** — no built-in default), `evidence_capture`, `evidence_inline`, `proxy_enabled`, `headless`, `allow_offsite`, `replay_llm_fallback` (+ model), `force_relearn`.
 
-**Not overridable** (env-only — destinations, secrets, capacity): storage backends/buckets, SQS, `DATABASE_URL`, `ANTHROPIC_API_KEY`, auth/webhook secrets, proxy creds, `SERVICE_MODE`, `MAX_CONCURRENT_RUNS`, `MAX_QUEUE_DEPTH`, `BROWSER_RECYCLE_RUNS`, `MAX_RUN_TIMEOUT_SECONDS`. A payload can never change where data is stored/sent or raise resource ceilings.
+**Not overridable** (env-only — destinations, secrets, capacity): storage backends/buckets, SQS, `DATABASE_URL`, model-provider keys/endpoints (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `OLLAMA_BASE_URL`), auth/webhook secrets, proxy creds, `SERVICE_MODE`, `MAX_CONCURRENT_RUNS`, `MAX_QUEUE_DEPTH`, `BROWSER_RECYCLE_RUNS`, `MAX_RUN_TIMEOUT_SECONDS`. A payload can never change where data is stored/sent or raise resource ceilings.
 
 ## 7. Webhook verification
 

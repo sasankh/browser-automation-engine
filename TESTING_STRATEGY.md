@@ -1,6 +1,6 @@
 # Testing Strategy
 
-> Expands `PROJECT_SPEC.md` §15. Defines the test architecture, the fixture harness, how the Anthropic API is handled deterministically, and the two permanent release-blocking tests. Write/extend this as the fixture site is built (Phase 2).
+> Expands `PROJECT_SPEC.md` §15. Defines the test architecture, the fixture harness, how the LLM provider API is handled deterministically, and the two permanent release-blocking tests. Write/extend this as the fixture site is built (Phase 2).
 
 ## 1. Pyramid for this system
 
@@ -14,9 +14,9 @@ Most confidence comes from the **integration** layer here, because the system's 
 
 ## 2. The offline guarantee
 
-Integration tests run against a **bundled express fixture site** (`test/fixtures/site`), fully offline. The only thing that may reach the network is the Anthropic API, and only in agent-mode tests. Everything else — target site, storage, queue — is local. CI must be able to run the whole non-agent suite with no external dependencies.
+Integration tests run against a **bundled express fixture site** (`test/fixtures/site`), fully offline. The only thing that may reach the network is the configured LLM provider's API, and only in agent-mode tests (a local provider like Ollama reaches nothing external). Everything else — target site, storage, queue — is local. CI must be able to run the whole non-agent suite with no external dependencies.
 
-### Faking the Anthropic API deterministically
+### Faking the LLM provider API deterministically
 
 Agent-mode tests can't depend on live, non-deterministic model output for assertions. Two-tier approach:
 

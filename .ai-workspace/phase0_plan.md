@@ -18,7 +18,7 @@ Lock every input later phases depend on, so no phase stalls on an unanswered que
 
 - `DECISIONS.md` at repo root capturing the four resolved items + the recorded defaults for the open ones.
 - Repo with license, CODEOWNERS, branch protection.
-- A provisioned Anthropic API key proven reachable from a throwaway container.
+- A provisioned model-provider key/endpoint (Anthropic/OpenAI/Google or local Ollama) proven reachable from a throwaway container.
 - 2–3 real public test sites chosen (lookup forms, no auth, no CAPTCHA) + intent to build the bundled fixture site in Phase 2.
 
 ## Edge cases / risks

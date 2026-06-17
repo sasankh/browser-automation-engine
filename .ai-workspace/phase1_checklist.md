@@ -24,7 +24,7 @@ A running service that accepts a run, persists it, and returns an envelope — w
 ### Tasks
 
 **Project setup**
-- [ ] TS + Node 22 project; strict tsconfig; ESLint/Prettier; vitest or jest.
+- [ ] TS + Node 24 (latest LTS) project; strict tsconfig; ESLint/Prettier; vitest or jest.
 - [ ] Fastify server; `PORT`; structured JSON logger (pino) with `run_id` scoping.
 - [ ] Dockerfile `FROM mcr.microsoft.com/playwright:<pinned>` (browser deps present even though unused this phase); `tini` as PID 1.
 - [ ] `docker-compose.yml`: engine + Postgres; `DATABASE_URL` wired; `-v ./data:/data`.

@@ -12,7 +12,7 @@
 | Concurrent runs | Cross-request data bleed | One `BrowserContext` per run; no shared mutable run state; keyed evidence/version paths (`ARCHITECTURE.md` §8.1). Tested by the Phase 3 isolation test. |
 | Webhooks | Forged/tampered result delivery | HMAC-SHA256 over the raw body (`X-Engine-Signature`); callers verify constant-time. |
 | API access | Unauthorized runs | `API_AUTH_MODE` = `none` (internal trust) \| `api_key` \| `hmac`; the `caller` scope drives idempotency + (future) tenancy. |
-| Secrets | Exposure | `ANTHROPIC_API_KEY`, proxy creds, webhook + auth secrets, `DATABASE_URL` are env/secret-manager only — never in payloads, never overridable by `config`. |
+| Secrets | Exposure | Model-provider keys/endpoints (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `OLLAMA_BASE_URL`), proxy creds, webhook + auth secrets, `DATABASE_URL` are env/secret-manager only — never in payloads, never overridable by `config`. A payload may select the provider/model but never supply a key or redirect an endpoint. |
 | Payload config | Privilege/resource escalation | `config` can change behavior but never destinations or capacity ceilings (`MAX_CONCURRENT_RUNS` etc. are env-only). |
 
 ## 2. Data handling

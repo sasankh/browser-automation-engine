@@ -26,14 +26,14 @@ The order is deliberate and should not be reshuffled:
 Lock the inputs so no later phase stalls on an unanswered question.
 
 ### Tasks
-- [ ] Confirm locked decisions from spec §17: TypeScript/Node 22, Postgres everywhere, structural-first extraction with surfaced LLM fallback, three-limit concurrency model.
-- [ ] Decide **API auth mode** for v1 (`none` | `api_key` | `hmac`). Default assumption: `none` for first internal deploy, `hmac` reserved. Record the choice.
-- [ ] Decide **sync mode** (`?wait=true`) in or out for v1. Default: out (async-only).
-- [ ] Pick the **project name** (replaces "engine" placeholder) — affects package name, ID prefixes, image name.
-- [ ] Provision an **Anthropic API key** and confirm Stagehand can reach it from a local container.
+- [x] Confirm locked decisions from spec §17: TypeScript/Node 22, Postgres everywhere, structural-first extraction with surfaced LLM fallback, three-limit concurrency model.
+- [x] Decide **API auth mode** for v1 (`none` | `api_key` | `hmac`). Default assumption: `none` for first internal deploy, `hmac` reserved. Record the choice. → **`none`** (DECISIONS.md #7).
+- [x] Decide **sync mode** (`?wait=true`) in or out for v1. Default: out (async-only). → **out** (DECISIONS.md #8).
+- [x] Pick the **project name** (replaces "engine" placeholder) — affects package name, ID prefixes, image name. → **Rote** (DECISIONS.md #6).
+- [ ] Provision a **model-provider key/endpoint** (Anthropic/OpenAI/Google, or a local Ollama endpoint) and confirm Stagehand can reach it from a local container.
 - [ ] Confirm **target test sites**: pick 2–3 real public sites with lookup forms for end-to-end validation (no auth, no CAPTCHA) + the bundled fixture site.
 - [ ] Repository created; license; CODEOWNERS; branch protection.
-- [ ] Decide ID scheme: `run_...`, `pb_...` (ULID/KSUID for sortability). Record prefix constants.
+- [x] Decide ID scheme: `run_...`, `pb_...` (ULID/KSUID for sortability). Record prefix constants. → **ULID**, prefixes `run_`/`pb_` (DECISIONS.md #9).
 
 ### Acceptance criteria
 - All four spec §17 "resolved" items are reflected in a short `DECISIONS.md` in the repo.
@@ -41,7 +41,7 @@ Lock the inputs so no later phase stalls on an unanswered question.
 
 ### ▣ Plan & Verify gate — Phase 0
 - **Plan check:** Is every input Phase 1 needs now decided or defaulted? (runtime, DB, auth, name, IDs, API key, test sites)
-- **Verify:** `DECISIONS.md` exists and is reviewed. Anthropic key works from a throwaway container (`curl` the API or a 3-line Stagehand smoke). No open question blocks scaffolding.
+- **Verify:** `DECISIONS.md` exists and is reviewed. A model-provider key/endpoint works from a throwaway container (`curl` the provider API or a 3-line Stagehand smoke). No open question blocks scaffolding.
 - **Exit condition:** a second person could start Phase 1 from the repo with no verbal context.
 
 ---
@@ -53,7 +53,7 @@ A running service that accepts a run, persists it, and returns an envelope — w
 ### Tasks
 
 **Project setup**
-- [ ] TS + Node 22 project; strict tsconfig; ESLint/Prettier; vitest or jest.
+- [ ] TS + Node 24 (latest LTS) project; strict tsconfig; ESLint/Prettier; vitest or jest.
 - [ ] Fastify server; `PORT`; structured JSON logger (pino) with `run_id` scoping.
 - [ ] Dockerfile `FROM mcr.microsoft.com/playwright:<pinned>` (browser deps present even though unused this phase); `tini` as PID 1.
 - [ ] `docker-compose.yml`: engine + Postgres; `DATABASE_URL` wired; `-v ./data:/data`.
@@ -198,7 +198,7 @@ Now the expensive path: learn a task from an instruction and **compile it into a
 ### Tasks
 
 **Stagehand integration**
-- [ ] `AgentEngine` wrapping `stagehand.agent()`/`act()`/`observe()`/`extract()` in `LOCAL` mode with the configured model + Anthropic key.
+- [ ] `AgentEngine` wrapping `stagehand.agent()`/`act()`/`observe()`/`extract()` in `LOCAL` mode, with the configured `model` (`provider/name`) resolved via the `ModelGateway` (Anthropic/OpenAI/Google/local).
 - [ ] Browser launched through the Phase-3 pool/context factory (channel, proxy flag, headless per config) — agent runs are just another isolated run.
 - [ ] Guardrails: `agent_max_steps` budget, wall-clock timeout (reuses Phase-3 timeout), domain confinement (no off-site nav unless `allow_offsite`), `captcha_detected` short-circuit.
 - [ ] `SelectorCache` (local impl): persist Stagehand `observe()` results so repeat agent operations skip inference; S3 backend deferred to Phase 6.

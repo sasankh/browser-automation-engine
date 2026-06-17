@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-A self-hosted, Dockerized service that performs browser-based tasks on any website, driven by natural-language instructions. The first time a task runs, an AI agent (Stagehand + Claude API) figures out how to perform it. The successful run is **compiled into a versioned, parameterized playbook**. Every subsequent run replays the playbook deterministically with plain Playwright — no LLM, near-zero cost. When a playbook breaks (site redesign), the agent **self-heals** it by re-exploring and writing a new playbook version.
+A self-hosted, Dockerized service that performs browser-based tasks on any website, driven by natural-language instructions. The first time a task runs, an AI agent (Stagehand driving a configured LLM provider — Anthropic, OpenAI, Google, or a local model) figures out how to perform it. The successful run is **compiled into a versioned, parameterized playbook**. Every subsequent run replays the playbook deterministically with plain Playwright — no LLM, near-zero cost. When a playbook breaks (site redesign), the agent **self-heals** it by re-exploring and writing a new playbook version.
 
 The engine is **universal**: it knows nothing about license verification, KYB, or any domain. Callers define the task (instruction), the target (url), the inputs (data), and the desired output shape (output_format). Domain systems are pure consumers.
 
@@ -24,7 +24,7 @@ The engine is **universal**: it knows nothing about license verification, KYB, o
                  │        ▼              ▼               │      │
                  │  ┌───────────┐  ┌────────────┐        │      │
                  │  │ Playbook  │  │ Agent      │        │      │
-                 │  │ Runner    │  │ Engine     │──► Claude API │
+                 │  │ Runner    │  │ Engine     │──► LLM provider │
                  │  │ (no LLM)  │  │ (Stagehand)│        │      │
                  │  └─────┬─────┘  └─────┬──────┘        │      │
                  │        │              │ compiles      │      │
@@ -67,7 +67,7 @@ The engine is **universal**: it knows nothing about license verification, KYB, o
 | **Run** | One execution of a task (agent mode or playbook mode). Has a `run_id`. |
 | **Instruction** | Natural-language description of the task, supplied by the caller. |
 | **Playbook** | Compiled, parameterized, deterministic recipe for a task. Has a `playbook_id` and versions. |
-| **Agent mode** | Stagehand + Claude API working from an instruction. Produces a playbook on success. |
+| **Agent mode** | Stagehand + a configured LLM provider (Anthropic, OpenAI, Google, or local) working from an instruction. Produces a playbook on success. |
 | **Playbook mode** | Plain Playwright executing stored steps. No LLM. |
 | **Self-heal** | Automatic fallback from a failed playbook run to agent mode, producing a new playbook version. |
 | **Evidence** | Screenshot + final HTML captured at the end of a run. |
@@ -324,7 +324,7 @@ Step vocabulary v1: `goto`, `click`, `fill`, `select`, `check`, `press`, `wait_f
 
 ### 9.1 Agent mode (Stagehand)
 
-1. Resolve config; launch browser (Playwright, `channel` per config, proxy if `proxy_enabled`).
+1. Resolve config (including the **required** `model` as `provider/name` — absent → `validation_error`); launch browser (Playwright, `channel` per config, proxy if `proxy_enabled`).
 2. Construct agent context: instruction, url, data (keys + values), output_format if present.
 3. `stagehand.agent()` drives navigation/actions; orchestrator records every `act()`/`observe()` with selectors and data-value provenance.
 4. If extraction task: `extract()` with Zod schema from output_format; validate.
@@ -380,19 +380,19 @@ Resolution per key: **payload `config` > environment > built-in default**. The f
 | `self_heal_on_extraction_failure` | `CONFIG_SELF_HEAL_ON_EXTRACTION_FAILURE` | `false` | |
 | `run_timeout_seconds` | `RUN_TIMEOUT_SECONDS` | `180` | wall clock per run; a payload value is capped by `MAX_RUN_TIMEOUT_SECONDS` |
 | `agent_max_steps` | `CONFIG_AGENT_MAX_STEPS` | `25` | agent guardrail |
-| `model` | `CONFIG_MODEL` | (current Claude default) | agent + extract model |
+| `model` | `CONFIG_MODEL` | (none — **required**) | agent + extract model as `provider/name` (e.g. `anthropic/claude-...`, `openai/gpt-4.1`, `google/gemini-...`, `ollama/llama3.1`); **no built-in default** — a run that needs a model with none set → `validation_error` |
 | `evidence_capture` | `CONFIG_EVIDENCE_CAPTURE` | `true` | |
 | `evidence_inline` | `CONFIG_EVIDENCE_INLINE` | `false` | embed base64 in envelope (local/air-gapped) |
 | `proxy_enabled` | `CONFIG_PROXY_ENABLED` | `false` | per-run override allowed |
 | `headless` | `CONFIG_HEADLESS` | `true` | |
 | `allow_offsite` | `CONFIG_ALLOW_OFFSITE` | `false` | agent domain confinement |
 | `replay_llm_fallback` | `REPLAY_LLM_FALLBACK` | `off` | structural-first; surfaced fallback (§9.2) |
-| `replay_llm_fallback_model` | `REPLAY_LLM_FALLBACK_MODEL` | (unset) | model used only when fallback engages |
+| `replay_llm_fallback_model` | `REPLAY_LLM_FALLBACK_MODEL` | (unset) | `provider/name` model used only when the fallback engages |
 | `force_relearn` | — (payload only) | `false` | §8.4 |
 
 **Capacity limits are env-only and NOT payload-overridable** (a payload must never raise a container's resource ceilings): `MAX_CONCURRENT_RUNS`, `MAX_QUEUE_DEPTH`, `BROWSER_RECYCLE_RUNS`, `MAX_RUN_TIMEOUT_SECONDS` (see §9.4).
 
-Non-overridable env-only settings: storage backends and paths/buckets, SQS settings, `ANTHROPIC_API_KEY`, `SERVICE_MODE`, auth secrets, webhook signing secrets, proxy credentials. **Payload config can never change where data is stored or sent.**
+Non-overridable env-only settings: storage backends and paths/buckets, SQS settings, model-provider keys/endpoints (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `OLLAMA_BASE_URL`), `SERVICE_MODE`, auth secrets, webhook signing secrets, proxy credentials. **Payload config can pick the provider/model but can never change where data is stored or sent, supply a provider key, or redirect a provider endpoint.**
 
 ```env
 SERVICE_MODE=all | api | worker
@@ -406,7 +406,14 @@ SQS_ENABLED=false
 SQS_QUEUE_URL=
 SQS_DLQ_URL=
 SQS_RESULTS_QUEUE_URL=
+
+# Model providers — env-only secrets/endpoints; pick per-run via config.model = "provider/name"
 ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+GOOGLE_GENERATIVE_AI_API_KEY=
+OLLAMA_BASE_URL=                   # e.g. http://localhost:11434/v1 (OpenAI-compatible; local, no external call)
+OPENAI_BASE_URL=                   # optional: OpenAI-compatible gateway (vLLM/LM Studio/OpenRouter/Azure)
+
 WEBHOOK_SIGNING_SECRET=
 API_AUTH_MODE=none | api_key | hmac
 PROXY_URL=
@@ -421,7 +428,7 @@ BROWSER_RECYCLE_RUNS=10           # recycle a Chromium process after N runs (mem
 
 # Replay LLM extraction fallback (see §9.2)
 REPLAY_LLM_FALLBACK=off           # on | off
-REPLAY_LLM_FALLBACK_MODEL=        # model used only when fallback engages
+REPLAY_LLM_FALLBACK_MODEL=        # provider/name model used only when fallback engages
 ```
 
 ## 11. Evidence
@@ -432,7 +439,7 @@ REPLAY_LLM_FALLBACK_MODEL=        # model used only when fallback engages
 
 ## 12. Docker & Deployment
 
-- Single image, `FROM mcr.microsoft.com/playwright:<pinned>`; Node 22 + the engine. Entrypoint switches on `SERVICE_MODE`:
+- Single image, `FROM mcr.microsoft.com/playwright:<pinned>`; Node 24 (latest LTS) + the engine. Entrypoint switches on `SERVICE_MODE`:
   - `all`: HTTP server + in-process job loop (laptop / single-container deployments).
   - `api`: HTTP only — validates, persists, enqueues (requires SQS).
   - `worker`: SQS consumer + execution only.
@@ -457,7 +464,7 @@ REPLAY_LLM_FALLBACK_MODEL=        # model used only when fallback engages
 ## 15. Testing Strategy
 
 - **Unit**: config resolver, payload validation, templating/provenance, envelope construction, step interpreter (against fixture DOMs via Playwright + local static pages).
-- **Integration**: dockerized engine vs. a bundled fixture website (express app with forms/results pages) — covers agent run → compile → replay → mutate fixture site → self-heal, fully offline except the Claude API.
+- **Integration**: dockerized engine vs. a bundled fixture website (express app with forms/results pages) — covers agent run → compile → replay → mutate fixture site → self-heal, fully offline except the configured LLM provider's API (none, when using a local model such as Ollama).
 - **Contract tests**: golden envelope fixtures; webhook signing.
 - **Chaos**: kill browser mid-run, storage unavailable, SQS visibility expiry.
 
@@ -474,7 +481,7 @@ REPLAY_LLM_FALLBACK_MODEL=        # model used only when fallback engages
 ## 17. Resolved Decisions & Open Questions
 
 **Resolved (locked):**
-- **Runtime**: TypeScript / Node 22. (Stagehand is TS-native; matches the Kompliant MCP server stack; the AI sits behind the Claude API so no ML-lib pull.)
+- **Runtime**: TypeScript / Node 24 (latest LTS — see DECISIONS #10). (Stagehand is TS-native; matches the Kompliant MCP server stack; the AI sits behind a provider-agnostic LLM gateway — Anthropic / OpenAI / Google / local, see DECISIONS #11 — so no ML-lib pull.)
 - **Run-record + playbook-index store**: PostgreSQL everywhere (one mental model; transactional `active_version` pointer moves; matches existing Postgres expertise). Playbook *bodies* and evidence remain blobs in local FS / S3.
 - **Replay extraction**: structural-first with a configurable, always-surfaced LLM fallback — `REPLAY_LLM_FALLBACK` (on|off, env, payload-overridable) + `REPLAY_LLM_FALLBACK_MODEL`. When engaged it sets `meta.llm_fallback_used` and is counted per-playbook so drift is visible (§9.2).
 - **Concurrency model**: three per-container env limits — `MAX_CONCURRENT_RUNS` / `MAX_QUEUE_DEPTH` / `RUN_TIMEOUT_SECONDS` — with full request-isolation invariants (§9.4). Global cross-container cap deferred to v2.

@@ -4,9 +4,9 @@
 
 ## 1. Prerequisites
 
-- Node 22 (match the version pinned in `.nvmrc` / `package.json` engines).
+- Node 24 (latest LTS; match the version pinned in `.nvmrc` / `package.json` engines).
 - Docker + Docker Compose.
-- An Anthropic API key (only needed for agent-mode work; replay/runner work needs none).
+- A model-provider key/endpoint (only needed for agent-mode work — e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or a local `OLLAMA_BASE_URL`; replay/runner work needs none).
 
 ## 2. First run
 
@@ -33,7 +33,12 @@ DATABASE_URL=postgres://engine:engine@postgres:5432/engine
 STORAGE_BACKEND=local
 STORAGE_LOCAL_PATH=/data
 CACHE_BACKEND=local
-ANTHROPIC_API_KEY=            # required only for agent/heal/fallback work
+# Model providers (env-only) — pick per-run via config.model="provider/name"; only for agent/heal/fallback
+CONFIG_MODEL=                 # required for agent/heal/fallback runs, e.g. anthropic/claude-... or ollama/llama3.1
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+GOOGLE_GENERATIVE_AI_API_KEY=
+OLLAMA_BASE_URL=             # e.g. http://localhost:11434/v1 — local, no external call
 SQS_ENABLED=false
 MAX_CONCURRENT_RUNS=3
 MAX_QUEUE_DEPTH=20
@@ -55,13 +60,14 @@ curl -X POST localhost:8080/v1/runs -H 'content-type: application/json' -d '{
 # → 202 { meta: { run_id } } ; then GET /v1/runs/{run_id}
 ```
 
-**Learn a new task (needs ANTHROPIC_API_KEY):**
+**Learn a new task (needs a model — set `CONFIG_MODEL` or `config.model`, plus the matching provider key):**
 
 ```bash
 curl -X POST localhost:8080/v1/runs -H 'content-type: application/json' -d '{
   "instruction": "Look up the license and get its details",
   "url": "http://fixture-site:3000/lookup",
   "data": { "license_number": "A123456", "last_name": "Nguyen" },
+  "config": { "model": "anthropic/claude-..." },
   "output_format": { "license_status": "string", "holder_name": "string" }
 }'
 ```
@@ -93,7 +99,7 @@ npm run test:live        # opt-in: real agent runs vs fixture (needs API key)
 |---|---|
 | `/v1/health` db not up | Postgres not ready / wrong `DATABASE_URL` |
 | `422` on a replay | missing `required_data_keys` for that playbook (check `GET /v1/playbooks/{id}`) |
-| agent run errors with no API key | `ANTHROPIC_API_KEY` unset |
+| agent run errors with no model | `model` unset (no `config.model`/`CONFIG_MODEL`) or the matching provider key unset |
 | `captcha_detected` | the target site is bot-walled — pick a different test site |
 | `429` on submit | `MAX_QUEUE_DEPTH` reached — expected under burst; raise limits or back off |
 | OOM under load | `MAX_CONCURRENT_RUNS` too high for the box (~2GB/run) |
