@@ -81,6 +81,10 @@ export class AgentEngine {
 
     const stagehand = new Stagehand({
       env: 'LOCAL',
+      // Fully local (no Browserbase API); `experimental` unlocks the agent abort signal we use for the
+      // wall-clock cancellation. Both are required by Stagehand v3.5 to pass `signal` to agent.execute().
+      disableAPI: true,
+      experimental: true,
       model: {
         modelName: input.config.model.modelString,
         ...(input.config.model.apiKey ? { apiKey: input.config.model.apiKey } : {}),

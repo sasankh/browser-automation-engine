@@ -12,6 +12,13 @@ describe('ModelGateway — provider/name resolution + require-explicit (DECISION
     expect(r.modelId).toBe('claude-sonnet-4-6');
     expect(r.modelString).toBe('anthropic/claude-sonnet-4-6');
     expect(r.apiKey).toBe('sk-test');
+    // Pin the /v1 endpoint (Stagehand v3.5 otherwise 404s at /messages) — env-overridable.
+    expect(r.baseURL).toBe('https://api.anthropic.com/v1');
+  });
+
+  it('honors an ANTHROPIC_BASE_URL override', () => {
+    const r = gateway({ ANTHROPIC_API_KEY: 'x', ANTHROPIC_BASE_URL: 'https://proxy/v1' }).resolve('anthropic/claude-sonnet-4-6');
+    expect(r.baseURL).toBe('https://proxy/v1');
   });
 
   it('require-explicit: a null/empty model is no_model (→ validation_error upstream)', () => {
