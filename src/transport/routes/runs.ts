@@ -18,7 +18,13 @@ export function registerRunRoutes(
     }
     const result = await orchestrator.submit(parsed.data);
     if (result.kind === 'rejected') {
-      return reply.code(result.http).send({ error: { code: result.code, message: result.message } });
+      const error: Record<string, unknown> = { message: result.message };
+      if (result.code) error.code = result.code;
+      if (result.retryAfterSeconds !== undefined) {
+        error.retry_after_seconds = result.retryAfterSeconds;
+        void reply.header('Retry-After', String(result.retryAfterSeconds));
+      }
+      return reply.code(result.http).send({ error });
     }
     return reply.code(202).send({ meta: { run_id: result.run_id, status: 'queued' } });
   });

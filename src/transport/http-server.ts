@@ -1,21 +1,21 @@
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyError } from 'fastify';
-import type { EnvConfig } from '../shared/env';
 import type { Db } from '../persistence/db';
 import type { RunOrchestrator } from '../orchestrator/run-orchestrator';
 import type { PlaybookRepository } from '../persistence/playbooks/repository';
 import type { EvidenceStore } from '../persistence/evidence/evidence';
+import type { Lifecycle } from '../orchestrator/lifecycle';
 import { registerRunRoutes } from './routes/runs';
 import { registerHealthRoutes } from './routes/health';
 import { registerPlaybookRoutes } from './routes/playbooks';
 import { loggerOptions } from '../shared/logger';
 
 export interface ServerDeps {
-  env: EnvConfig;
   db: Db;
   orchestrator: RunOrchestrator;
   playbooks: PlaybookRepository;
   evidence: EvidenceStore;
+  lifecycle: Lifecycle;
 }
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
@@ -42,7 +42,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   registerRunRoutes(app, deps.orchestrator, deps.evidence);
-  registerHealthRoutes(app, deps.db, deps.env);
+  registerHealthRoutes(app, deps.db, deps.lifecycle);
   registerPlaybookRoutes(app, deps.playbooks);
   return app;
 }

@@ -19,6 +19,7 @@ export interface EnvConfig {
   runTimeoutSeconds: number;
   maxRunTimeoutSeconds: number;
   browserRecycleRuns: number;
+  shutdownGraceSeconds: number;
   authMode: AuthMode;
 }
 
@@ -54,6 +55,7 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): EnvConfig {
     runTimeoutSeconds: intEnv(env, 'RUN_TIMEOUT_SECONDS', 180),
     maxRunTimeoutSeconds: intEnv(env, 'MAX_RUN_TIMEOUT_SECONDS', 600),
     browserRecycleRuns: intEnv(env, 'BROWSER_RECYCLE_RUNS', 10),
+    shutdownGraceSeconds: intEnv(env, 'SHUTDOWN_GRACE_SECONDS', 25),
     authMode: oneOf(env, 'API_AUTH_MODE', ['none', 'api_key', 'hmac'] as const, 'none'),
   });
 }

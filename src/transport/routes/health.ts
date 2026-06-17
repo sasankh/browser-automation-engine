@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../../persistence/db';
-import type { EnvConfig } from '../../shared/env';
+import type { Lifecycle } from '../../orchestrator/lifecycle';
 
-/** Liveness + DB reachability + live saturation (zeros until Phase 3 wires the semaphore). */
-export function registerHealthRoutes(app: FastifyInstance, db: Db, env: EnvConfig): void {
+/** Liveness + DB reachability + live saturation (runs_in_progress / queue_depth / max_concurrent_runs). */
+export function registerHealthRoutes(app: FastifyInstance, db: Db, lifecycle: Lifecycle): void {
   app.get('/v1/health', async (_req, reply) => {
     let dbUp = false;
     try {
@@ -12,12 +12,14 @@ export function registerHealthRoutes(app: FastifyInstance, db: Db, env: EnvConfi
     } catch {
       dbUp = false;
     }
+    const sat = lifecycle.saturation();
+    const status = !dbUp ? 'degraded' : lifecycle.isDraining ? 'draining' : 'ok';
     return reply.code(dbUp ? 200 : 503).send({
-      status: dbUp ? 'ok' : 'degraded',
+      status,
       db: dbUp ? 'up' : 'down',
-      runs_in_progress: 0,
-      queue_depth: 0,
-      max_concurrent_runs: env.maxConcurrentRuns,
+      runs_in_progress: sat.runs_in_progress,
+      queue_depth: sat.queue_depth,
+      max_concurrent_runs: sat.max_concurrent_runs,
     });
   });
 }

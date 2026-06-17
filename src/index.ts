@@ -8,18 +8,22 @@ import { LocalPlaybookStore } from './persistence/playbooks/store.local';
 import { PlaybookRepository } from './persistence/playbooks/repository';
 import { LocalEvidenceStore } from './persistence/evidence/evidence.local';
 import { PlaybookRunner } from './execution/playbook/runner';
+import { BrowserPool } from './browser/pool';
+import { Lifecycle } from './orchestrator/lifecycle';
 import { RunOrchestrator } from './orchestrator/run-orchestrator';
 import { buildServer } from './transport/http-server';
-import { shutdownBrowsers } from './browser/browser';
+import { checkMemoryBudget } from './shared/memory';
 import { logger } from './shared/logger';
 
 async function main(): Promise<void> {
   const env = loadEnvConfig();
+  checkMemoryBudget(env.maxConcurrentRuns);
+
   const db = createDb(env);
+  await runMigrations(db); // migrations run automatically on start (LOCAL_DEV §2)
 
-  // Migrations run automatically on start (LOCAL_DEV §2).
-  await runMigrations(db);
-
+  const pool = new BrowserPool(env.browserRecycleRuns);
+  const lifecycle = new Lifecycle(pool, env.maxConcurrentRuns, env.maxQueueDepth);
   const playbookStore = new LocalPlaybookStore(env.storageLocalPath);
   const playbooks = new PlaybookRepository(db, playbookStore);
   const evidence = new LocalEvidenceStore(env.storageLocalPath);
@@ -32,13 +36,21 @@ async function main(): Promise<void> {
     idempotency: new IdempotencyGuard(db),
     playbooks,
     runner,
+    lifecycle,
   });
 
-  const app = buildServer({ env, db, orchestrator, playbooks, evidence });
+  const app = buildServer({ db, orchestrator, playbooks, evidence, lifecycle });
 
+  // Graceful drain on SIGTERM/SIGINT: stop intake, let in-flight runs finish within the grace
+  // window, then tear down (ARCHITECTURE §8.4).
+  let shuttingDown = false;
   const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ grace_seconds: env.shutdownGraceSeconds }, 'draining for shutdown');
+    await lifecycle.drain(env.shutdownGraceSeconds * 1000);
     await app.close().catch(() => undefined);
-    await shutdownBrowsers().catch(() => undefined);
+    await pool.shutdown().catch(() => undefined);
     await db.end().catch(() => undefined);
     process.exit(0);
   };
@@ -46,8 +58,11 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown());
 
   await app.listen({ host: '0.0.0.0', port: env.port });
-  // SERVICE_MODE api/worker split arrives in Phase 6; Phase 2 always serves HTTP.
-  logger.info({ port: env.port, mode: env.serviceMode }, 'rote started');
+  // SERVICE_MODE api/worker split arrives in Phase 6; this phase always serves HTTP.
+  logger.info(
+    { port: env.port, mode: env.serviceMode, max_concurrent_runs: env.maxConcurrentRuns },
+    'rote started',
+  );
 }
 
 main().catch((err: unknown) => {

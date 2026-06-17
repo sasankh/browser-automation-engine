@@ -76,7 +76,7 @@ Point `url` at the bundled fixture site for offline work, or a real Phase-0 test
 
 ## 5. The fixture site
 
-`test/fixtures/site` is a local express app with a lookup→results flow, an action-only form, and a mutated variant (for heal tests). Bring it up via the compose test profile (confirm the exact command at Phase 2). Integration tests run fully offline against it.
+`test/fixtures/site` is a local express app with a lookup→results flow, an action-only form, and a mutated variant (for heal tests), plus isolation endpoints (`/iso/set`→`/iso/apply`→`/iso/read`, which stamp a per-run token into the context's cookie + localStorage and read it back) and timing endpoints (`/slow?ms=`, `/hang`) used by the Phase 3 concurrency/isolation tests. Bring it up via the compose test profile (confirm the exact command at Phase 2). Integration tests run fully offline against it.
 
 ## 6. Tests
 
@@ -84,6 +84,19 @@ Point `url` at the bundled fixture site for offline work, or a real Phase-0 test
 npm test                 # unit + integration (offline)
 npx tsc --noEmit         # must be clean before every commit
 npm run test:live        # opt-in: real agent runs vs fixture (needs API key)
+```
+
+Crank the release-blocking isolation test in CI via `ISO_CONCURRENCY` / `ISO_ROUNDS`
+(`ISO_CONCURRENCY=24 ISO_ROUNDS=100 npx vitest run test/integration/concurrency.test.ts`).
+
+**Phase 3 cold-start load + isolation gate** — drive the dockerized engine over real HTTP
+(seeds an isolation playbook, fires sequential + concurrent replays, asserts zero
+cross-contamination and that saturation returns to 0):
+
+```bash
+docker compose down -v && docker compose up --build -d
+FIXTURE_URL=http://fixture:3100 DATABASE_URL=postgres://rote:rote@localhost:5433/rote \
+  STORAGE_LOCAL_PATH=./data ENGINE_URL=http://localhost:8080 npx tsx scripts/phase3-load.ts
 ```
 
 ## 7. Reading what happened

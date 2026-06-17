@@ -12,6 +12,21 @@ function page(title: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body>${body}</body></html>`;
 }
 
+function parseCookie(header: string, name: string): string {
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) return decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return '';
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
+  );
+}
+
 export function createFixtureApp(): express.Express {
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -94,6 +109,57 @@ export function createFixtureApp(): express.Express {
          </section>`,
       ),
     );
+  });
+
+  // Isolation: a per-run token is filled into a form that stamps it into THIS context's cookie +
+  // localStorage (/iso/apply), then read back (/iso/read). This drives the real fill->click->extract
+  // op path — `goto` does not template by design, so the token must flow through a form, exactly as a
+  // compiled playbook would parameterize a search.
+  app.get('/iso/set', (_req, res) => {
+    res.send(
+      page(
+        'Set',
+        `<form action="/iso/apply" method="get">
+           <input id="token" name="token" type="text" />
+           <button id="apply" type="submit">Set</button>
+         </form>`,
+      ),
+    );
+  });
+
+  app.get('/iso/apply', (req, res) => {
+    const token = String(req.query.token ?? '');
+    res.cookie('iso_token', token, { httpOnly: false, sameSite: 'lax' });
+    res.send(
+      page(
+        'Applied',
+        `<div class="done">ok</div>
+         <script>try { localStorage.setItem('iso_token', ${JSON.stringify(token)}); } catch (e) {}</script>`,
+      ),
+    );
+  });
+
+  app.get('/iso/read', (req, res) => {
+    const cookieToken = parseCookie(req.headers.cookie ?? '', 'iso_token');
+    res.send(
+      page(
+        'Read',
+        `<div class="cookie-token">${escapeHtml(cookieToken)}</div>
+         <div class="ls-token" id="ls"></div>
+         <script>try { document.getElementById('ls').textContent = localStorage.getItem('iso_token') || ''; } catch (e) {}</script>`,
+      ),
+    );
+  });
+
+  // Cap/backpressure: a run that takes a known amount of time.
+  app.get('/slow', (req, res) => {
+    const ms = Math.min(Number(req.query.ms ?? 400) || 400, 10_000);
+    setTimeout(() => res.send(page('Slow', `<div class="done">ok</div>`)), ms);
+  });
+
+  // Timeout: hold the response far longer than any test's wall clock (self-resolves for cleanup).
+  app.get('/hang', (_req, res) => {
+    setTimeout(() => res.send(page('Hang', `<div class="done">late</div>`)), 60_000);
   });
 
   return app;

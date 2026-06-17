@@ -3,6 +3,7 @@ import type { RunStore } from '../persistence/runs/run-store.pg';
 import type { IdempotencyGuard } from '../intake/idempotency';
 import type { PlaybookRepository } from '../persistence/playbooks/repository';
 import type { PlaybookRunner } from '../execution/playbook/runner';
+import type { Lifecycle } from './lifecycle';
 import { resolveBehaviorConfig, toEffectiveConfig } from '../intake/config-resolver';
 import type { BehaviorConfig } from '../intake/config-resolver';
 import { newRunId } from '../shared/ids';
@@ -16,10 +17,11 @@ import { runLogger } from '../shared/logger';
 const DEFAULT_CALLER = 'default';
 /** Default per-step Playwright timeout (a step's own `timeout_ms` overrides it). */
 const DEFAULT_STEP_TIMEOUT_MS = 15_000;
+const RETRY_AFTER_SECONDS = 1;
 
 export type SubmitResult =
   | { kind: 'accepted'; run_id: string }
-  | { kind: 'rejected'; http: number; code: string; message: string };
+  | { kind: 'rejected'; http: number; code?: string; message: string; retryAfterSeconds?: number };
 
 export interface OrchestratorDeps {
   env: EnvConfig;
@@ -28,91 +30,92 @@ export interface OrchestratorDeps {
   idempotency: IdempotencyGuard;
   playbooks: PlaybookRepository;
   runner: PlaybookRunner;
+  lifecycle: Lifecycle;
 }
 
 /**
- * The one transport-agnostic entry point (resolution logic, PROJECT_SPEC §5.3). Phase 2 resolves the
- * `playbook_id` path to the deterministic runner; the `instruction` path stays stubbed until Phase 4.
- * Replay validation (playbook exists, required keys present) is synchronous — it fails fast with
- * 404/422 BEFORE a run row or a browser is created.
+ * The one transport-agnostic entry point (resolution logic, PROJECT_SPEC §5.3). A synchronous
+ * capacity reservation is taken FIRST so backpressure is deterministic; it is consumed by the
+ * playbook execution path (released when the run settles) and released by `finally` on every other
+ * path. The `instruction` path stays stubbed until Phase 4.
  */
 export class RunOrchestrator {
   constructor(private readonly deps: OrchestratorDeps) {}
 
   async submit(payload: Payload): Promise<SubmitResult> {
-    if (payload.idempotency_key) {
-      const existing = await this.deps.idempotency.lookup(DEFAULT_CALLER, payload.idempotency_key);
-      if (existing) return { kind: 'accepted', run_id: existing };
+    if (this.deps.lifecycle.isDraining) {
+      return { kind: 'rejected', http: 503, message: 'engine is draining for shutdown' };
     }
-    const behavior = resolveBehaviorConfig(payload.config, this.deps.nodeEnv, {
-      maxRunTimeoutSeconds: this.deps.env.maxRunTimeoutSeconds,
-    });
-    return payload.playbook_id
-      ? this.submitPlaybook(payload, behavior)
-      : this.submitAgentStub(payload, behavior);
-  }
-
-  private async submitPlaybook(payload: Payload, behavior: BehaviorConfig): Promise<SubmitResult> {
-    const playbookId = payload.playbook_id;
-    if (!playbookId) return { kind: 'rejected', http: 500, code: 'internal_error', message: 'no playbook_id' };
-
-    const resolved = await this.deps.playbooks.resolveForReplay(playbookId, payload.playbook_version);
-    if (!resolved) {
-      return { kind: 'rejected', http: 404, code: 'playbook_not_found', message: `playbook not found: ${playbookId}` };
-    }
-
-    const data = (payload.data ?? {}) as RunData;
-    const missing = resolved.required_data_keys.filter((k) => !(k in data));
-    if (missing.length > 0) {
+    // Synchronous capacity gate FIRST (before any await) — deterministic 429 backpressure.
+    if (!this.deps.lifecycle.tryReserve()) {
       return {
         kind: 'rejected',
-        http: 422,
-        code: 'validation_error',
-        message: `missing required data keys: ${missing.join(', ')}`,
+        http: 429,
+        message: 'too many concurrent runs; retry later',
+        retryAfterSeconds: RETRY_AFTER_SECONDS,
       };
     }
 
-    const body = await this.deps.playbooks.loadVersion(playbookId, resolved.version);
-    if (!body) {
-      return {
-        kind: 'rejected',
-        http: 404,
-        code: 'playbook_not_found',
-        message: `playbook version body missing: ${playbookId} v${resolved.version}`,
-      };
+    let consumed = false;
+    try {
+      if (payload.idempotency_key) {
+        const existing = await this.deps.idempotency.lookup(DEFAULT_CALLER, payload.idempotency_key);
+        if (existing) return { kind: 'accepted', run_id: existing };
+      }
+
+      const behavior = resolveBehaviorConfig(payload.config, this.deps.nodeEnv, {
+        maxRunTimeoutSeconds: this.deps.env.maxRunTimeoutSeconds,
+      });
+
+      if (payload.playbook_id) {
+        const resolved = await this.deps.playbooks.resolveForReplay(payload.playbook_id, payload.playbook_version);
+        if (!resolved) {
+          return { kind: 'rejected', http: 404, code: 'playbook_not_found', message: `playbook not found: ${payload.playbook_id}` };
+        }
+        const data = (payload.data ?? {}) as RunData;
+        const missing = resolved.required_data_keys.filter((k) => !(k in data));
+        if (missing.length > 0) {
+          return { kind: 'rejected', http: 422, code: 'validation_error', message: `missing required data keys: ${missing.join(', ')}` };
+        }
+        const body = await this.deps.playbooks.loadVersion(payload.playbook_id, resolved.version);
+        if (!body) {
+          return { kind: 'rejected', http: 404, code: 'playbook_not_found', message: `playbook version body missing: ${payload.playbook_id} v${resolved.version}` };
+        }
+
+        const runId = newRunId();
+        await this.deps.runs.createRun({
+          id: runId,
+          effectiveConfig: toEffectiveConfig(behavior),
+          dataKeys: Object.keys(data),
+          callbackUrl: payload.callback_url ?? null,
+          mode: 'playbook',
+          playbookId: payload.playbook_id,
+          playbookVersion: resolved.version,
+        });
+        const finalRunId = await this.claimIdempotency(payload, runId);
+        if (finalRunId !== runId) return { kind: 'accepted', run_id: finalRunId };
+
+        consumed = true; // executePlaybook now owns the reservation (released when the run settles)
+        void this.executePlaybook(runId, body, data, behavior);
+        return { kind: 'accepted', run_id: runId };
+      }
+
+      // instruction → agent stub (Phase 4); does not consume a browser slot.
+      const data = (payload.data ?? {}) as RunData;
+      const runId = newRunId();
+      await this.deps.runs.createRun({
+        id: runId,
+        effectiveConfig: toEffectiveConfig(behavior),
+        dataKeys: Object.keys(data),
+        callbackUrl: payload.callback_url ?? null,
+      });
+      const finalRunId = await this.claimIdempotency(payload, runId);
+      if (finalRunId !== runId) return { kind: 'accepted', run_id: finalRunId };
+      void this.runStub(runId);
+      return { kind: 'accepted', run_id: runId };
+    } finally {
+      if (!consumed) this.deps.lifecycle.releaseReservation();
     }
-
-    const runId = newRunId();
-    await this.deps.runs.createRun({
-      id: runId,
-      effectiveConfig: toEffectiveConfig(behavior),
-      dataKeys: Object.keys(data),
-      callbackUrl: payload.callback_url ?? null,
-      mode: 'playbook',
-      playbookId,
-      playbookVersion: resolved.version,
-    });
-
-    const finalRunId = await this.claimIdempotency(payload, runId);
-    if (finalRunId !== runId) return { kind: 'accepted', run_id: finalRunId };
-
-    void this.executePlaybook(runId, body, data, behavior);
-    return { kind: 'accepted', run_id: runId };
-  }
-
-  private async submitAgentStub(payload: Payload, behavior: BehaviorConfig): Promise<SubmitResult> {
-    const data = (payload.data ?? {}) as RunData;
-    const runId = newRunId();
-    await this.deps.runs.createRun({
-      id: runId,
-      effectiveConfig: toEffectiveConfig(behavior),
-      dataKeys: Object.keys(data),
-      callbackUrl: payload.callback_url ?? null,
-    });
-    const finalRunId = await this.claimIdempotency(payload, runId);
-    if (finalRunId !== runId) return { kind: 'accepted', run_id: finalRunId };
-    void this.runStub(runId);
-    return { kind: 'accepted', run_id: runId };
   }
 
   /** Returns the winning run_id (ours, or an existing one on idempotency conflict — deleting our orphan). */
@@ -134,22 +137,37 @@ export class RunOrchestrator {
     behavior: BehaviorConfig,
   ): Promise<void> {
     try {
-      await this.deps.runs.markRunning(runId);
-      const outcome = await this.deps.runner.run({
-        runId,
-        playbook: body,
-        data,
-        headless: behavior.headless,
-        defaultTimeoutMs: DEFAULT_STEP_TIMEOUT_MS,
-        captureEvidence: behavior.evidence_capture,
-      });
-      await this.deps.runs.finishRun(runId, {
-        status: outcome.status,
-        result: outcome.result,
-        error: outcome.error,
-        extractionErrors: outcome.extractionErrors,
-        evidenceCaptured: outcome.evidenceCaptured,
-      });
+      const outcome = await this.deps.lifecycle.execute(
+        behavior.headless,
+        behavior.run_timeout_seconds * 1000,
+        async (page) => {
+          await this.deps.runs.markRunning(runId); // running only once a slot is actually held
+          return this.deps.runner.run({
+            runId,
+            page,
+            playbook: body,
+            data,
+            defaultTimeoutMs: DEFAULT_STEP_TIMEOUT_MS,
+            captureEvidence: behavior.evidence_capture,
+          });
+        },
+      );
+
+      if (outcome.kind === 'timeout') {
+        await this.deps.runs.finishRun(runId, {
+          status: 'failed',
+          error: { code: 'timeout', message: `run exceeded ${behavior.run_timeout_seconds}s wall clock` },
+        });
+      } else {
+        const o = outcome.value;
+        await this.deps.runs.finishRun(runId, {
+          status: o.status,
+          result: o.result,
+          error: o.error,
+          extractionErrors: o.extractionErrors,
+          evidenceCaptured: o.evidenceCaptured,
+        });
+      }
     } catch (err) {
       runLogger(runId).error({ err }, 'playbook run crashed');
       await this.deps.runs

@@ -14,9 +14,10 @@ import { LocalPlaybookStore } from '../../src/persistence/playbooks/store.local'
 import { PlaybookRepository } from '../../src/persistence/playbooks/repository';
 import { LocalEvidenceStore } from '../../src/persistence/evidence/evidence.local';
 import { PlaybookRunner } from '../../src/execution/playbook/runner';
+import { BrowserPool } from '../../src/browser/pool';
+import { Lifecycle } from '../../src/orchestrator/lifecycle';
 import { RunOrchestrator } from '../../src/orchestrator/run-orchestrator';
 import { buildServer } from '../../src/transport/http-server';
-import { shutdownBrowsers } from '../../src/browser/browser';
 import { newPlaybookId } from '../../src/shared/ids';
 import type { PlaybookVersion } from '../../src/execution/playbook/playbook-schema';
 
@@ -26,6 +27,7 @@ let fixture: FixtureHandle;
 let db: Db;
 let app: FastifyInstance;
 let playbooks: PlaybookRepository;
+let pool: BrowserPool;
 let tmp: string;
 
 beforeAll(async () => {
@@ -38,6 +40,8 @@ beforeAll(async () => {
   playbooks = new PlaybookRepository(db, store);
   const evidence = new LocalEvidenceStore(env.storageLocalPath);
   const runner = new PlaybookRunner(evidence);
+  pool = new BrowserPool(env.browserRecycleRuns);
+  const lifecycle = new Lifecycle(pool, env.maxConcurrentRuns, env.maxQueueDepth);
   const orchestrator = new RunOrchestrator({
     env,
     nodeEnv: process.env,
@@ -45,14 +49,15 @@ beforeAll(async () => {
     idempotency: new IdempotencyGuard(db),
     playbooks,
     runner,
+    lifecycle,
   });
-  app = buildServer({ env, db, orchestrator, playbooks, evidence });
+  app = buildServer({ db, orchestrator, playbooks, evidence, lifecycle });
   await app.ready();
 });
 
 afterAll(async () => {
   await app?.close();
-  await shutdownBrowsers();
+  await pool?.shutdown();
   await db?.end();
   await fixture?.close();
   if (tmp) await rm(tmp, { recursive: true, force: true });

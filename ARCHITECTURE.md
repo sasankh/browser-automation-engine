@@ -409,7 +409,7 @@ CLOUD / SCALED (ECS Fargate)
 
 ### 8.5 Failure isolation
 
-A crashing run kills only its own context; the pool replaces it, and other in-flight runs are unaffected (§8.1). A wedged Chromium is caught by the per-run `RUN_TIMEOUT_SECONDS` wall clock → context torn down → slot freed → `timeout` error returned. Process recycling (`BROWSER_RECYCLE_RUNS`) caps cumulative memory leaks across runs that share a Chromium process.
+A crashing run kills only its own context; the pool replaces it, and other in-flight runs are unaffected (§8.1). A wedged Chromium is caught by the per-run `RUN_TIMEOUT_SECONDS` wall clock → context torn down → slot freed → `timeout` error returned. Process recycling (`BROWSER_RECYCLE_RUNS`) caps cumulative memory leaks across runs that share a Chromium process; the pool recycles a process only once its in-flight contexts have drained, and exposes a monotonic `generation` counter as the recycle-observable proxy (Playwright does not surface the OS PID — DECISIONS #19). The pool keys browsers by `headless` mode, so headed and headless runs never share a process.
 
 ## 9. Security Architecture
 

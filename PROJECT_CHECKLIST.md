@@ -154,6 +154,8 @@ The cheap path. Execute a **declarative playbook** against a site with plain Pla
 
 ## Phase 3 — Concurrency Core & Request Isolation
 
+> **Status: ✅ COMPLETE** — Plan & Verify gate passed by observation (2026-06-17): 27 tests green (incl. the release-blocking isolation test @ 600 concurrent runs), dockerized cold-start load gate (2×60 real-HTTP runs, zero cross-contamination, saturation→0, stable memory). Granular tracker + Notes: [.ai-workspace/phase3_checklist.md](.ai-workspace/phase3_checklist.md). **Next: Phase 4 (on explicit go-ahead).**
+
 Make the engine safe under simultaneous load **before** the agent exists, so isolation is proven on the fully-controllable deterministic path. This is the phase that protects production.
 
 ### Tasks

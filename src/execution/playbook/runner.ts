@@ -1,4 +1,4 @@
-import { acquireRunBrowser } from '../../browser/browser';
+import type { Page } from 'playwright';
 import { executeStep, evaluateAssertion, StepError } from './step-interpreter';
 import type { RunData } from './step-interpreter';
 import { structuralExtract } from './structural-extractor';
@@ -9,9 +9,10 @@ import type { EvidenceStore } from '../../persistence/evidence/evidence';
 
 export interface RunInput {
   runId: string;
+  /** The page is supplied by the lifecycle/pool — the runner never acquires or closes a context. */
+  page: Page;
   playbook: PlaybookVersion;
   data: RunData;
-  headless: boolean;
   defaultTimeoutMs: number;
   captureEvidence: boolean;
 }
@@ -25,16 +26,15 @@ export interface RunOutcome {
 }
 
 /**
- * The deterministic, zero-LLM replay path. Loads no Stagehand/Anthropic — interprets the fixed op
- * vocabulary over Playwright, extracts structurally, captures evidence. One isolated context per run.
+ * The deterministic, zero-LLM replay path. Imports no Stagehand/Anthropic — interprets the fixed op
+ * vocabulary over the supplied Playwright page, extracts structurally, captures evidence. Context
+ * lifecycle (acquisition, the wall-clock timeout teardown) is owned by the lifecycle/pool above it.
  */
 export class PlaybookRunner {
   constructor(private readonly evidence: EvidenceStore) {}
 
   async run(input: RunInput): Promise<RunOutcome> {
-    const { runId, playbook, data, headless, defaultTimeoutMs, captureEvidence } = input;
-    const browser = await acquireRunBrowser(headless);
-    const page = browser.page;
+    const { runId, page, playbook, data, defaultTimeoutMs, captureEvidence } = input;
 
     let status: RunStatus = 'completed';
     let result: Record<string, unknown> | null = null;
@@ -85,8 +85,6 @@ export class PlaybookRunner {
         // evidence is best-effort; never fail a run over it
       }
     }
-
-    await browser.close();
 
     return {
       status,

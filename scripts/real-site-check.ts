@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PlaybookRunner } from '../src/execution/playbook/runner';
 import { LocalEvidenceStore } from '../src/persistence/evidence/evidence.local';
-import { shutdownBrowsers } from '../src/browser/browser';
+import { BrowserPool } from '../src/browser/pool';
 import type { PlaybookVersion } from '../src/execution/playbook/playbook-schema';
 
 /**
@@ -14,6 +14,7 @@ import type { PlaybookVersion } from '../src/execution/playbook/playbook-schema'
 async function main(): Promise<void> {
   const tmp = await mkdtemp(join(tmpdir(), 'rote-realsite-'));
   const runner = new PlaybookRunner(new LocalEvidenceStore(tmp));
+  const pool = new BrowserPool(10);
   const url = process.env.SITE_URL ?? 'https://quotes.toscrape.com/';
 
   const body: PlaybookVersion = {
@@ -35,23 +36,27 @@ async function main(): Promise<void> {
     assertions: [{ after_step: 1, expect: 'selector_present', selector: '.quote .author' }],
   };
 
-  const outcome = await runner.run({
-    runId: 'real-site-check',
-    playbook: body,
-    data: {},
-    headless: true,
-    defaultTimeoutMs: 20_000,
-    captureEvidence: true,
-  });
-
-  console.log(
-    JSON.stringify(
-      { url, status: outcome.status, result: outcome.result, extractionErrors: outcome.extractionErrors, evidenceDir: tmp },
-      null,
-      2,
-    ),
-  );
-  await shutdownBrowsers();
+  const ctx = await pool.acquire(true);
+  try {
+    const outcome = await runner.run({
+      runId: 'real-site-check',
+      page: ctx.page,
+      playbook: body,
+      data: {},
+      defaultTimeoutMs: 20_000,
+      captureEvidence: true,
+    });
+    console.log(
+      JSON.stringify(
+        { url, status: outcome.status, result: outcome.result, extractionErrors: outcome.extractionErrors, evidenceDir: tmp },
+        null,
+        2,
+      ),
+    );
+  } finally {
+    await ctx.release();
+    await pool.shutdown();
+  }
 }
 
 main().catch((err: unknown) => {
