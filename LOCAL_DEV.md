@@ -29,7 +29,7 @@ Migrations run automatically on engine start (or via a documented `npm run migra
 ```env
 SERVICE_MODE=all
 PORT=8080
-DATABASE_URL=postgres://engine:engine@postgres:5432/engine
+DATABASE_URL=postgres://rote:rote@postgres:5432/rote   # in-compose; host-run dev/tests use localhost:5433
 STORAGE_BACKEND=local
 STORAGE_LOCAL_PATH=/data
 CACHE_BACKEND=local

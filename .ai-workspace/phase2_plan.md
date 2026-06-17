@@ -13,6 +13,12 @@ Build the cheap path: execute a **declarative playbook** against a site with pla
 - **Structural extraction only** this phase. Missing fields → `extraction_errors` + `completed_with_extraction_errors`. The LLM fallback is explicitly Phase 5 — do not add it here.
 - **Local storage backends** only (`PlaybookStore`/`EvidenceStore` local impls). S3 is Phase 6 behind the same interface.
 
+**Confirmed at kickoff (2026-06-16):**
+- **Extraction is `fields`-map-driven.** The `extract` op carries a `fields` map (`output_format` field → selector relative to `scope_selector`); the structural extractor reads it deterministically — no per-field heuristics. **Phase 2 hand-authors `fields`** in the fixture playbooks; **Phase 4's agent determines the mapping and the compiler writes it** (the two-speed thesis applied to extraction). This extends the op schema — `DATA_MODEL.md` §4 gains `fields` and a `DECISIONS.md` row, shipped *with* the Phase 2 build (as-built sync), not pre-emptively.
+- **Test topology:** integration tests run in **vitest on the host** (in-process express fixture + a one-time `npx playwright install chromium`); `docker-compose.yml` gains a `fixture` service so the cold-start gate replays in-container.
+- **Real-site manual check:** **NPI Registry** (`npiregistry.cms.hhs.gov`) — swappable; the interpreter stays fully site-agnostic (nothing site-specific in the code).
+- **New deps (added at §0 kickoff):** `playwright@1.61.0` (matches the Docker image `v1.61.0-noble`) + `express`/`@types/express` for the fixture.
+
 ## File-by-file (indicative)
 
 - `src/execution/playbook/runner.ts` — orchestrates: load version → validate data → interpret → extract → evidence → envelope.

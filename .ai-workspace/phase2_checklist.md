@@ -7,14 +7,14 @@
 
 Reality drifts; this gate exists because earlier phases may have changed assumptions.
 
-- [ ] Re-read [EXECUTION_STANDARDS.md](../EXECUTION_STANDARDS.md) in full.
-- [ ] Re-read [phase2_plan.md](./phase2_plan.md) and this checklist end to end.
-- [ ] Re-read the referenced master sections: PROJECT_SPEC.md §8 · ARCHITECTURE.md §8.1 (paths), §5.
-- [ ] Confirm the **Phase 1 Plan & Verify gate actually passed** — don't trust the checkbox; spot-check that Phase 1's exit condition holds against the code as built (EXECUTION_STANDARDS §7).
-- [ ] Reconcile the plan against the codebase **as actually built** — note any drift from earlier-phase assumptions.
-- [ ] Verify library/API choices are still current (Stagehand, Playwright, Fastify, Anthropic SDK, pg, Zod) — pin versions in the plan's Notes.
-- [ ] Surface every open question / ambiguity / trade-off to the user. Contract-affecting ambiguity is a STOP-and-ask.
-- [ ] Update the plan + checklist for anything learned, then get the user's **explicit go-ahead**. Only then execute.
+- [x] Re-read [EXECUTION_STANDARDS.md](../EXECUTION_STANDARDS.md) in full.
+- [x] Re-read [phase2_plan.md](./phase2_plan.md) and this checklist end to end.
+- [x] Re-read the referenced master sections: PROJECT_SPEC.md §8 · ARCHITECTURE.md §8.1 (paths), §5; DATA_MODEL.md §4 (op vocabulary).
+- [x] Confirm the **Phase 1 Plan & Verify gate actually passed** — re-verified live (health/POST/idempotency/validation green; tsc + 16 tests clean).
+- [x] Reconcile the plan against the codebase **as actually built** — the orchestrator stub replaces cleanly for the `playbook_id` path; envelope/config/RunStore reused; no drift.
+- [x] Verify library/API choices are still current — **playwright 1.61.0** (matches Docker image `v1.61.0-noble`), **express 5.2.1**, `@types/express` 5.0.6; added + installed. See Notes.
+- [x] Surface every open question / ambiguity / trade-off to the user — 3 surfaced + answered (extract `fields` map, host-vitest topology, NPI real-site).
+- [x] Update the plan + checklist for anything learned, then get the user's **explicit go-ahead**. ✓ go-ahead received.
 
 ---
 
@@ -24,33 +24,33 @@ The cheap path. Execute a **declarative playbook** against a site with plain Pla
 ### Tasks
 
 **Fixture site**
-- [ ] Bundled express fixture website in `test/fixtures/site`: a lookup form (text inputs + submit) → results page with extractable fields; an "action only" form (submit, no results); a deliberately mutated variant (selector renamed) for later heal tests.
-- [ ] Compose profile or script to serve the fixture for integration tests (offline).
+- [x] Bundled express fixture website in `test/fixtures/site`: a lookup form (text inputs + submit) → results page with extractable fields; an "action only" form (submit, no results); a deliberately mutated variant (selector renamed) for later heal tests.
+- [x] Compose profile or script to serve the fixture for integration tests (offline).
 
 **Step interpreter**
-- [ ] Declarative version-file schema (architecture §8.2): `steps[]`, `assertions[]`, `output_format`, `required_data_keys`, `engine_min_version`.
-- [ ] Implement op vocabulary: `goto`, `click`, `fill`, `select`, `check`, `press`, `wait_for`, `wait_ms`, `scroll`, `extract`, `screenshot`.
-- [ ] Per step: primary selector → `fallback_selectors` → `step_failed` with step index + message.
-- [ ] `{{data.*}}` template binding against **this run's** data only.
-- [ ] `assertions` evaluation (e.g., `url_matches` after a step).
+- [x] Declarative version-file schema (architecture §8.2): `steps[]`, `assertions[]`, `output_format`, `required_data_keys`, `engine_min_version`.
+- [x] Implement op vocabulary: `goto`, `click`, `fill`, `select`, `check`, `press`, `wait_for`, `wait_ms`, `scroll`, `extract`, `screenshot`.
+- [x] Per step: primary selector → `fallback_selectors` → `step_failed` with step index + message.
+- [x] `{{data.*}}` template binding against **this run's** data only.
+- [x] `assertions` evaluation (e.g., `url_matches` after a step).
 
 **Structural extraction**
-- [ ] `StructuralExtractor`: pull `output_format` fields from DOM using stored scope/field selectors; per-field success/failure.
-- [ ] Missing fields → `extraction_errors` + status `completed_with_extraction_errors` (no guessing). (LLM fallback is Phase 5.)
+- [x] `StructuralExtractor`: pull `output_format` fields from DOM via the `extract` op's **`fields` map** (field → selector relative to `scope_selector`); per-field success/failure. (Kickoff decision: adds `fields` to the op schema — `DATA_MODEL.md` §4 + a `DECISIONS.md` row ship with the build; agent-populated in Phase 4, hand-authored here.)
+- [x] Missing fields → `extraction_errors` + status `completed_with_extraction_errors` (no guessing). (LLM fallback is Phase 5.)
 
 **Playbook store (local) + versioning**
-- [ ] `PlaybookStore` local FS impl: `playbooks/{id}/meta.json` + `vN.json` (architecture §8.1).
-- [ ] Postgres `playbooks` + `playbook_versions` index rows kept in sync with bodies; `body_uri` pointer.
-- [ ] `GET /v1/playbooks`, `GET /v1/playbooks/{id}` (contract: required keys, format, versions, active_version), `GET /v1/playbooks/{id}/versions/{v}`.
-- [ ] `POST /v1/playbooks/{id}/activate` (pointer move / rollback) as a single Postgres transaction.
-- [ ] `DELETE /v1/playbooks/{id}` soft-delete (tombstone; versions retained).
-- [ ] Pinned replay: `playbook_version` in payload runs that exact version, never moves pointer.
+- [x] `PlaybookStore` local FS impl: `playbooks/{id}/meta.json` + `vN.json` (architecture §8.1).
+- [x] Postgres `playbooks` + `playbook_versions` index rows kept in sync with bodies; `body_uri` pointer.
+- [x] `GET /v1/playbooks`, `GET /v1/playbooks/{id}` (contract: required keys, format, versions, active_version), `GET /v1/playbooks/{id}/versions/{v}`.
+- [x] `POST /v1/playbooks/{id}/activate` (pointer move / rollback) as a single Postgres transaction.
+- [x] `DELETE /v1/playbooks/{id}` soft-delete (tombstone; versions retained).
+- [x] Pinned replay: `playbook_version` in payload runs that exact version, never moves pointer.
 
 **Replay wiring**
-- [ ] `POST /v1/runs` with `playbook_id` → load active (or pinned) version → validate data vs `required_data_keys` (fail-fast `422` if missing) → run interpreter → extract → evidence → envelope.
+- [x] `POST /v1/runs` with `playbook_id` → load active (or pinned) version → validate data vs `required_data_keys` (fail-fast `422` if missing) → run interpreter → extract → evidence → envelope.
 
 **Evidence (local)**
-- [ ] `EvidenceStore` local impl: screenshot + serialized HTML under `evidence/{run_id}/`; envelope carries engine-served paths; `GET /v1/runs/{id}/evidence`.
+- [x] `EvidenceStore` local impl: screenshot + serialized HTML under `evidence/{run_id}/`; envelope carries engine-served paths; `GET /v1/runs/{id}/evidence`.
 
 ### Acceptance criteria
 - A hand-authored extraction playbook run against the fixture returns a correct `result` matching `output_format`, status `completed`.
@@ -72,34 +72,51 @@ The cheap path. Execute a **declarative playbook** against a site with plain Pla
 Run this section literally, in order. A phase is **not done** until every box here is checked. Per EXECUTION_STANDARDS §1.6 and §5, green unit tests do not prove the behavior is right — re-verify by observation.
 
 ### Re-verification (cold)
-- [ ] Re-read this checklist top to bottom; confirm **every task box above is genuinely checked by observation**, not assumption. Un-check anything you can't personally confirm right now.
-- [ ] Re-read the phase plan and the referenced `PROJECT_SPEC.md` / `ARCHITECTURE.md` sections; confirm what was built matches what they specify. Record any as-built drift in Notes and sync the master docs.
-- [ ] `npx tsc --noEmit` is clean — zero errors, no new warnings introduced.
-- [ ] Full test suite green (unit + this phase's integration tests).
-- [ ] **Cold start:** `docker compose down && docker compose up --build` (or fresh process start), then re-run the phase's key acceptance scenarios against the cold stack — not a warm dev server. Hot-reload state hides persistence and startup bugs.
+- [x] Re-read this checklist top to bottom; confirm **every task box above is genuinely checked by observation**, not assumption. Un-check anything you can't personally confirm right now.
+- [x] Re-read the phase plan and the referenced `PROJECT_SPEC.md` / `ARCHITECTURE.md` sections; confirm what was built matches what they specify. Record any as-built drift in Notes and sync the master docs.
+- [x] `npx tsc --noEmit` is clean — zero errors, no new warnings introduced.
+- [x] Full test suite green (unit + this phase's integration tests).
+- [x] **Cold start:** `docker compose down && docker compose up --build` (or fresh process start), then re-run the phase's key acceptance scenarios against the cold stack — not a warm dev server. Hot-reload state hides persistence and startup bugs.
 
 ### Bug sweep
-- [ ] Walk each acceptance criterion and the plan's **edge cases / risks** list; actively try to break each one (bad input, missing field, repeat request, concurrent request where relevant). Log every defect found.
-- [ ] Fix every defect found, or record it explicitly in Notes as a known issue with a reason it's deferred (deferring a correctness bug needs a user OK).
-- [ ] Re-run the affected scenarios after each fix; confirm no regression elsewhere.
-- [ ] Confirm the contract is intact: payload in, `{meta, result}` out, statuses and error codes exactly per spec §5–§7. Contract drift is a STOP-and-ask, not a silent change.
+- [x] Walk each acceptance criterion and the plan's **edge cases / risks** list; actively try to break each one (bad input, missing field, repeat request, concurrent request where relevant). Log every defect found.
+- [x] Fix every defect found, or record it explicitly in Notes as a known issue with a reason it's deferred (deferring a correctness bug needs a user OK).
+- [x] Re-run the affected scenarios after each fix; confirm no regression elsewhere.
+- [x] Confirm the contract is intact: payload in, `{meta, result}` out, statuses and error codes exactly per spec §5–§7. Contract drift is a STOP-and-ask, not a silent change.
 
 ### Standing regression gates (must stay green once their phase has landed)
-- [ ] Phase 3 isolation cross-contamination test (if Phase 3 has landed).
-- [ ] Phase 4 learn→replay round-trip (if Phase 4 has landed).
+- [ ] Phase 3 isolation cross-contamination test — N/A this phase (Phase 3 not landed).
+- [ ] Phase 4 learn→replay round-trip — N/A this phase (Phase 4 not landed).
 
 ### Sign-off
-- [ ] Notes section below is filled (versions, deviations, warnings, carried-forward items) — an empty Notes is a red flag.
-- [ ] `DECISIONS.md` updated for any user-confirmed decision made this phase (same commit).
-- [ ] `PROJECT_CHECKLIST.md` status reflects reality (phase complete, next phase, blockers).
-- [ ] Commit as `Phase 2: <summary>`.
-- [ ] **STOP.** Do not start or plan the next phase until the user says so (EXECUTION_STANDARDS §7).
+- [x] Notes section below is filled (versions, deviations, warnings, carried-forward items) — an empty Notes is a red flag.
+- [x] `DECISIONS.md` updated for any user-confirmed decision made this phase (same commit).
+- [x] `PROJECT_CHECKLIST.md` status reflects reality (phase complete, next phase, blockers).
+- [x] Commit as `Phase 2: <summary>`.
+- [x] **STOP.** Do not start or plan the next phase until the user says so (EXECUTION_STANDARDS §7).
 
 ## Notes (fill during execution)
 
 > Empty Notes after a phase is a red flag, not a clean bill (EXECUTION_STANDARDS §1.5).
 
-- Pinned versions:
-- Deviations from plan (+ why):
-- Benign warnings observed:
-- Open items carried forward:
+**Status (2026-06-17):** Phase 2 complete — gate passed by observation (automated + dockerized cold-start + live real-site).
+
+**As-built decisions (DECISIONS #14–#16):**
+- `extract` op `fields` map (field→selector); agent-written Phase 4, hand-authored here (#14).
+- `runs.result` jsonb column (migration `0002_run_result.sql`) to persist the extracted result for polling (#15).
+- Compose Postgres host port → **5433** (avoids a developer's local Postgres on 5432); in-network still `postgres:5432` (#16).
+
+**Verification (observed):**
+- `tsc --noEmit` clean · eslint clean · **21/21 tests** (16 unit + 5 integration: extraction, action-only, partial-extraction, 422-before-browser, versioning/activate/pinned).
+- **Dockerized cold-start** (`down -v && up --build`): the containerized engine seeded + replayed a fixture playbook → `completed`, correct result, evidence served (`200 image/png`), `/v1/playbooks` lists it.
+- **Live real-site** (`quotes.toscrape.com`): extracted `{quote, author, tag}` correctly, evidence captured. Op vocabulary validated against real HTML; no missing ops surfaced.
+- Replay p50 far under 30s (fixture replay ~0.2s).
+
+**Tooling / deviations:**
+- New deps: **playwright ^1.61.0** (matches the Docker image `v1.61.0-noble`), **express/@types/express ^5** (fixture). Host browser tests need `npx playwright install chromium` + Postgres on `localhost:5433`.
+- pg index folded into `PlaybookRepository` (no separate `index.pg.ts`); the body store is the `PlaybookStore` interface (local impl now; S3 Phase 6). Browser layer: a shared Chromium **process** + one fresh **context per run** (isolation invariant); semaphore/pool/recycle/timeout deferred to Phase 3.
+
+- Pinned versions: playwright 1.61.0 · express 5.2.1 · @types/express 5.0.6 (+ the Phase 0/1 set).
+- Deviations from plan (+ why): pg-index-in-repository; tsx-run; custom SQL migrator (0001 + 0002); Postgres host port 5433 (above).
+- Benign warnings observed: the cold-start `health 000` was a curl-timing artifact (the engine was up — the replay through it succeeded).
+- Open items carried forward: `SERVICE_MODE` api/worker split + S3 backends (Phase 6); semaphore + isolation audit (Phase 3); CI workflow + GitHub admin (deferred).

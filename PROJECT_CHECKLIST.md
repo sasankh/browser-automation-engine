@@ -100,38 +100,40 @@ A running service that accepts a run, persists it, and returns an envelope — w
 
 ## Phase 2 — Playbook Runner (deterministic, no LLM)
 
+> **Status: ✅ COMPLETE** — Plan & Verify gate passed by observation (2026-06-17): 21 tests green, dockerized cold-start replay, live real-site extraction. Granular tracker + Notes: [.ai-workspace/phase2_checklist.md](.ai-workspace/phase2_checklist.md). **Next: Phase 3 (on explicit go-ahead).**
+
 The cheap path. Execute a **declarative playbook** against a site with plain Playwright. Playbooks are hand-authored fixtures this phase (the agent that writes them comes in Phase 4) — this isolates the interpreter from the compiler.
 
 ### Tasks
 
 **Fixture site**
-- [ ] Bundled express fixture website in `test/fixtures/site`: a lookup form (text inputs + submit) → results page with extractable fields; an "action only" form (submit, no results); a deliberately mutated variant (selector renamed) for later heal tests.
-- [ ] Compose profile or script to serve the fixture for integration tests (offline).
+- [x] Bundled express fixture website in `test/fixtures/site`: a lookup form (text inputs + submit) → results page with extractable fields; an "action only" form (submit, no results); a deliberately mutated variant (selector renamed) for later heal tests.
+- [x] Compose profile or script to serve the fixture for integration tests (offline).
 
 **Step interpreter**
-- [ ] Declarative version-file schema (architecture §8.2): `steps[]`, `assertions[]`, `output_format`, `required_data_keys`, `engine_min_version`.
-- [ ] Implement op vocabulary: `goto`, `click`, `fill`, `select`, `check`, `press`, `wait_for`, `wait_ms`, `scroll`, `extract`, `screenshot`.
-- [ ] Per step: primary selector → `fallback_selectors` → `step_failed` with step index + message.
-- [ ] `{{data.*}}` template binding against **this run's** data only.
-- [ ] `assertions` evaluation (e.g., `url_matches` after a step).
+- [x] Declarative version-file schema (architecture §8.2): `steps[]`, `assertions[]`, `output_format`, `required_data_keys`, `engine_min_version`.
+- [x] Implement op vocabulary: `goto`, `click`, `fill`, `select`, `check`, `press`, `wait_for`, `wait_ms`, `scroll`, `extract`, `screenshot`.
+- [x] Per step: primary selector → `fallback_selectors` → `step_failed` with step index + message.
+- [x] `{{data.*}}` template binding against **this run's** data only.
+- [x] `assertions` evaluation (e.g., `url_matches` after a step).
 
 **Structural extraction**
-- [ ] `StructuralExtractor`: pull `output_format` fields from DOM using stored scope/field selectors; per-field success/failure.
-- [ ] Missing fields → `extraction_errors` + status `completed_with_extraction_errors` (no guessing). (LLM fallback is Phase 5.)
+- [x] `StructuralExtractor`: pull `output_format` fields from DOM using the extract op's `fields` map (DECISIONS #14); per-field success/failure.
+- [x] Missing fields → `extraction_errors` + status `completed_with_extraction_errors` (no guessing). (LLM fallback is Phase 5.)
 
 **Playbook store (local) + versioning**
-- [ ] `PlaybookStore` local FS impl: `playbooks/{id}/meta.json` + `vN.json` (architecture §8.1).
-- [ ] Postgres `playbooks` + `playbook_versions` index rows kept in sync with bodies; `body_uri` pointer.
-- [ ] `GET /v1/playbooks`, `GET /v1/playbooks/{id}` (contract: required keys, format, versions, active_version), `GET /v1/playbooks/{id}/versions/{v}`.
-- [ ] `POST /v1/playbooks/{id}/activate` (pointer move / rollback) as a single Postgres transaction.
-- [ ] `DELETE /v1/playbooks/{id}` soft-delete (tombstone; versions retained).
-- [ ] Pinned replay: `playbook_version` in payload runs that exact version, never moves pointer.
+- [x] `PlaybookStore` local FS impl: `playbooks/{id}/meta.json` + `vN.json` (architecture §8.1).
+- [x] Postgres `playbooks` + `playbook_versions` index rows kept in sync with bodies; `body_uri` pointer.
+- [x] `GET /v1/playbooks`, `GET /v1/playbooks/{id}` (contract: required keys, format, versions, active_version), `GET /v1/playbooks/{id}/versions/{v}`.
+- [x] `POST /v1/playbooks/{id}/activate` (pointer move / rollback) as a single Postgres transaction.
+- [x] `DELETE /v1/playbooks/{id}` soft-delete (tombstone; versions retained).
+- [x] Pinned replay: `playbook_version` in payload runs that exact version, never moves pointer.
 
 **Replay wiring**
-- [ ] `POST /v1/runs` with `playbook_id` → load active (or pinned) version → validate data vs `required_data_keys` (fail-fast `422` if missing) → run interpreter → extract → evidence → envelope.
+- [x] `POST /v1/runs` with `playbook_id` → load active (or pinned) version → validate data vs `required_data_keys` (fail-fast `422` if missing) → run interpreter → extract → evidence → envelope.
 
 **Evidence (local)**
-- [ ] `EvidenceStore` local impl: screenshot + serialized HTML under `evidence/{run_id}/`; envelope carries engine-served paths; `GET /v1/runs/{id}/evidence`.
+- [x] `EvidenceStore` local impl: screenshot + serialized HTML under `evidence/{run_id}/`; envelope carries engine-served paths; `GET /v1/runs/{id}/evidence`.
 
 ### Acceptance criteria
 - A hand-authored extraction playbook run against the fixture returns a correct `result` matching `output_format`, status `completed`.

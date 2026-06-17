@@ -3,14 +3,19 @@ import type { FastifyInstance, FastifyError } from 'fastify';
 import type { EnvConfig } from '../shared/env';
 import type { Db } from '../persistence/db';
 import type { RunOrchestrator } from '../orchestrator/run-orchestrator';
+import type { PlaybookRepository } from '../persistence/playbooks/repository';
+import type { EvidenceStore } from '../persistence/evidence/evidence';
 import { registerRunRoutes } from './routes/runs';
 import { registerHealthRoutes } from './routes/health';
+import { registerPlaybookRoutes } from './routes/playbooks';
 import { loggerOptions } from '../shared/logger';
 
 export interface ServerDeps {
   env: EnvConfig;
   db: Db;
   orchestrator: RunOrchestrator;
+  playbooks: PlaybookRepository;
+  evidence: EvidenceStore;
 }
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
@@ -36,7 +41,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return reply.code(404).send({ error: { message: 'not found' } });
   });
 
-  registerRunRoutes(app, deps.orchestrator);
+  registerRunRoutes(app, deps.orchestrator, deps.evidence);
   registerHealthRoutes(app, deps.db, deps.env);
+  registerPlaybookRoutes(app, deps.playbooks);
   return app;
 }

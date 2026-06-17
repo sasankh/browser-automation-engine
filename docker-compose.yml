@@ -6,7 +6,9 @@ services:
       POSTGRES_PASSWORD: rote
       POSTGRES_DB: rote
     ports:
-      - '5432:5432'
+      # Host port 5433 to avoid clashing with a developer's local Postgres on 5432.
+      # The engine connects in-network via postgres:5432, so this host mapping is host-only.
+      - '5433:5432'
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U rote -d rote']
       interval: 2s
@@ -38,6 +40,13 @@ services:
       - '8080:8080'
     volumes:
       - ./data:/data
+
+  # Offline fixture site for the cold-start gate; the engine reaches it at http://fixture:3100.
+  fixture:
+    build: .
+    command: ['npx', 'tsx', 'test/fixtures/site/server.ts']
+    environment:
+      FIXTURE_PORT: '3100'
 
 volumes:
   pgdata:

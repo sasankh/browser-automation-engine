@@ -298,7 +298,8 @@ Playbooks are **declarative JSON interpreted by the runner**, not generated code
     { "op": "fill",    "selector": "#lastNm",  "value": "{{data.last_name}}" },
     { "op": "click",   "selector": "button[type=submit]" },
     { "op": "wait_for","selector": ".results-table", "timeout_ms": 15000 },
-    { "op": "extract", "schema_ref": "output_format", "scope_selector": ".results-table" }
+    { "op": "extract", "schema_ref": "output_format", "scope_selector": ".results-table",
+      "fields": { "license_status": ".status", "holder_name": ".holder" } }
   ],
   "assertions": [
     { "after_step": 5, "expect": "url_matches", "pattern": "results" }

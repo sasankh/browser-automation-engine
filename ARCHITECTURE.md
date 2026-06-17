@@ -225,6 +225,7 @@ CREATE TABLE runs (
   self_healed     BOOLEAN NOT NULL DEFAULT false,
   llm_fallback_used BOOLEAN NOT NULL DEFAULT false,
   effective_config JSONB NOT NULL,
+  result          JSONB,                        -- extracted output_format shape (migration 0002)
   error           JSONB,
   extraction_errors JSONB,
   data_keys       TEXT[] NOT NULL DEFAULT '{}', -- keys only; values never stored unless STORE_RUN_INPUTS
