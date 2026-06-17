@@ -34,3 +34,11 @@ Two resilience mechanisms that both lean on Phases 2+4. **Self-heal** = a runner
 ## Exit
 
 Maintenance-free in the common case: the mutate-and-heal end-to-end test passes (v1 fails on the mutated fixture → heals → v2 replays cleanly, `meta.self_healed=true`); heal respects config; non-eligible codes never heal; unhealthy flagging works; fallback surfacing verified both on and off; a healed `v2` diff vs `v1` is sensible.
+
+## Kickoff notes (2026-06-17) — user-confirmed (DECISIONS #25–#28)
+
+- **Extraction-miss precedence = fallback-first-then-heal** (#26): on a structural miss, try the LLM fallback if `REPLAY_LLM_FALLBACK=on`; if fields are STILL missing AND `self_heal_on_extraction_failure=on`, escalate to self-heal (re-learn `v(n+1)`); else `completed_with_extraction_errors`. Resolves the §7 `extraction_failed` vs `completed_with_extraction_errors` question for the replay path.
+- **Fallback model = cheaper Haiku** (`anthropic/claude-haiku-4-5`, tests) (#27). The `ModelGateway` gains the real model call: `ai` + `@ai-sdk/anthropic` promoted to **direct deps**; `generateObject` against the resolved `REPLAY_LLM_FALLBACK_MODEL` (require-explicit). The fallback is the one sanctioned LLM call on the replay path, made via the gateway only (no provider SDK import in `execution/playbook/`).
+- **Thresholds + metrics** (#28): `HEAL_FAILURE_THRESHOLD=3` (env) consecutive heal failures → `health=unhealthy`; fallback engagements → **persistent per-playbook DB count** (new migration) feeding `FALLBACK_AS_DRIFT_SIGNAL` re-learn flag after K; **Prometheus deferred** (no `metrics.ts` yet).
+- **Reservation refactor** (#28): the Phase-3 capacity reservation is released once per run by the orchestrator (not in `lifecycle.execute`/`executeAgent`) so a self-heal's second gated execution on the same `run_id` doesn't double-release. Phase-3 concurrency tests must stay green.
+- **Verification** (#25): offline proves the deterministic logic (model stubbed); opt-in `test:live` proves mutate→heal→v2-replay + fallback-surfacing; AND an in-container run (`docker-agent-check` style), per the Phase-4 bar.
