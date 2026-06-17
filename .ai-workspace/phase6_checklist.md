@@ -7,14 +7,14 @@
 
 Reality drifts; this gate exists because earlier phases may have changed assumptions.
 
-- [ ] Re-read [EXECUTION_STANDARDS.md](../EXECUTION_STANDARDS.md) in full.
-- [ ] Re-read [phase6_plan.md](./phase6_plan.md) and this checklist end to end.
-- [ ] Re-read the referenced master sections: PROJECT_SPEC.md §4.2, §6 · ARCHITECTURE.md §8.3, §8.4.
-- [ ] Confirm the **Phase 5 Plan & Verify gate actually passed** — don't trust the checkbox; spot-check that Phase 5's exit condition holds against the code as built (EXECUTION_STANDARDS §7).
-- [ ] Reconcile the plan against the codebase **as actually built** — note any drift from earlier-phase assumptions.
-- [ ] Verify library/API choices are still current (Stagehand, Playwright, Fastify, Anthropic SDK, pg, Zod) — pin versions in the plan's Notes.
-- [ ] Surface every open question / ambiguity / trade-off to the user. Contract-affecting ambiguity is a STOP-and-ask.
-- [ ] Update the plan + checklist for anything learned, then get the user's **explicit go-ahead**. Only then execute.
+- [x] Re-read [EXECUTION_STANDARDS.md](../EXECUTION_STANDARDS.md) in full (re-read this session at the Phase 4/5 kickoffs; still in force).
+- [x] Re-read [phase6_plan.md](./phase6_plan.md) and this checklist end to end.
+- [x] Re-read the referenced master sections: PROJECT_SPEC.md §4.2, §6 · ARCHITECTURE.md §8.3 (topologies), §8.4 (reliability).
+- [x] Confirm the **Phase 5 Plan & Verify gate actually passed** — verified this session: offline 74/3-skip, LIVE heal+fallback, in-Docker heal+fallback all green.
+- [x] Reconcile the plan against the codebase **as actually built** — storage interfaces (`PlaybookStore`/`EvidenceStore`/`SelectorCache`) backend-agnostic + local-only (need S3 impls); `SERVICE_MODE` resolved but `index.ts` always serves HTTP; `runs.webhook_status` + `evidence_inline` flag exist but no dispatcher/SQS/S3 env keys; evidence URLs are engine-proxied today.
+- [x] Verify library/API choices are still current — to add: **AWS SDK v3** `@aws-sdk/client-sqs` + `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` (latest-stable, honor a custom endpoint for LocalStack). Stagehand/Playwright/Fastify/pg/Zod unchanged from Phase 5.
+- [x] Surface every open question / ambiguity / trade-off to the user — 3 surfaced + answered: AWS emulation (LocalStack), webhook signing (deferred to Phase 7), evidence URLs (stable engine path → 302 to presigned). DECISIONS #29–#31.
+- [x] Update the plan + checklist for anything learned, then get the user's **explicit go-ahead**. — plan + checklist + DECISIONS updated; **awaiting explicit "start Phase 6" before any code.**
 
 ---
 
@@ -24,7 +24,7 @@ Swap the local edges for production ones, and split the process roles. The core 
 ### Tasks
 
 **Webhooks**
-- [ ] `WebhookDispatcher`: POST the envelope to `callback_url`; HMAC-SHA256 sign over raw body (`X-Engine-Signature`, per-caller secret).
+- [ ] `WebhookDispatcher`: POST the envelope to `callback_url`. **Signing DEFERRED to Phase 7 (DECISIONS #30)** — delivered **unsigned** this phase (no caller identity in v1 to key an HMAC secret on); the `X-Engine-Signature` HMAC lands with auth.
 - [ ] Retry 3× with backoff on non-2xx; record `webhook_status` on the run.
 
 **SQS (architecture §8 / spec §4.2)**
@@ -35,7 +35,7 @@ Swap the local edges for production ones, and split the process roles. The core 
 
 **S3 backends**
 - [ ] `PlaybookStore` S3 impl (same layout/prefix as local).
-- [ ] `EvidenceStore` S3 impl; envelope carries signed expiring URLs.
+- [ ] `EvidenceStore` S3 impl. Envelope keeps the **stable engine URL** `/v1/runs/:id/evidence/:file` in all backends; in S3 mode that endpoint **302-redirects to a freshly-presigned S3 URL** (DECISIONS #31).
 - [ ] `SelectorCache` S3 impl (local impl introduced with Stagehand in Phase 4).
 - [ ] `evidence_inline` path for air-gapped local mode (base64 in envelope).
 
@@ -45,7 +45,7 @@ Swap the local edges for production ones, and split the process roles. The core 
 - [ ] `SERVICE_MODE=all`: HTTP + in-process loop (unchanged from earlier phases).
 
 ### Acceptance criteria
-- Webhook delivered with a valid signature a caller can verify; retried on a simulated 500; `webhook_status` recorded.
+- Webhook delivered to `callback_url`; retried on a simulated 500; `webhook_status` recorded. ~~with a valid signature a caller can verify~~ **signature deferred to Phase 7 (DECISIONS #30).**
 - SQS message with the same payload schema runs identically to the HTTP path; result delivered by webhook and/or results queue.
 - Worker crash mid-run → message redelivered → no duplicate playbook/version/evidence (idempotency holds).
 - Poison message lands in DLQ after max receives.
@@ -90,7 +90,10 @@ Run this section literally, in order. A phase is **not done** until every box he
 
 > Empty Notes after a phase is a red flag, not a clean bill (EXECUTION_STANDARDS §1.5).
 
-- Pinned versions:
-- Deviations from plan (+ why):
-- Benign warnings observed:
-- Open items carried forward:
+**Kickoff (2026-06-17) — pre-build:**
+- **Pinned versions (to install at build):** `@aws-sdk/client-sqs`, `@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner` (latest-stable; `npm view` at install). LocalStack image for docker-compose. No other dep changes.
+- **Decisions (DECISIONS #29–#31):** LocalStack for AWS emulation; **webhook signing deferred to Phase 7** (unsigned delivery + retry + `webhook_status` this phase); evidence URLs stay the stable engine path → 302 to presigned S3 in s3 mode.
+- **Deviations from plan (+ why):** (1) webhook is **unsigned** this phase (#30) — relaxes the "valid signature" acceptance criterion, user-approved; (2) evidence URLs via engine 302-redirect, not direct presigned URLs in the envelope (#31) — keeps the contract uniform across backends.
+- **New env surface (to define, env-only):** `SQS_ENABLED`, `SQS_QUEUE_URL`, `SQS_DLQ_URL`, `SQS_RESULTS_QUEUE_URL`, `SQS_VISIBILITY_TIMEOUT_SECONDS`, `AWS_REGION`, `AWS_ENDPOINT_URL`/`S3_ENDPOINT` (LocalStack), `S3_BUCKET`, `WEBHOOK_MAX_RETRIES`. `STORAGE_BACKEND=local|s3` already exists.
+- **Open items carried forward:** webhook HMAC signing (Phase 7 + auth); per-caller secrets (needs caller identity).
+- **Master-doc sync (do at gate):** ARCHITECTURE §8.3/§8.4 already describe the topology + reliability accurately; sync the as-built env surface + the evidence-redirect + webhook-unsigned note. PROJECT_SPEC §4.2 (SQS) matches.
