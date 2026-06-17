@@ -23,9 +23,10 @@ Now the expensive path: learn a task from an instruction and **compile it into a
 
 ### Tasks
 
-> Legend: [x] = built + verified by observation offline. [x]† = built + typechecks against the real
-> Stagehand v3.5 API + wired, but its end-to-end *live* behavior is validated only under the opt-in
-> `npm run test:live` (no key in CI — DECISIONS #22). [ ] DEFERRED = carried forward with a reason.
+> Legend: [x] = built + verified by observation offline. [x]† = built + wired against the real Stagehand
+> v3.5 API; its end-to-end *live* behavior is exercised by the opt-in `npm run test:live` (no key in CI).
+> **As of 2026-06-17 the `†` live path is GREEN** — `test:live` passes the full learn→replay round-trip
+> against a real Anthropic model (DECISIONS #24). [ ] DEFERRED = carried forward with a reason.
 
 **Stagehand integration**
 - [x]† `AgentEngine` wrapping `stagehand.agent()`/`act()`/`observe()`/`extract()` in `LOCAL` mode, model resolved via the `ModelGateway` (`src/model/`, require-explicit — DECISIONS #11). — `agent-engine.ts`; require-explicit 422 verified offline + over HTTP.
@@ -83,7 +84,7 @@ Run this section literally, in order. A phase is **not done** until every box he
 
 ### Standing regression gates (must stay green once their phase has landed)
 - [x] Phase 3 isolation cross-contamination test — green (in the full suite).
-- [x] Phase 4 learn→replay round-trip — **deterministic compile→replay half green offline** (the release-blocking invariant CI enforces); the **full live learn→replay** is the opt-in `test:live` (written; runs on the user's key). Noted as the one gate whose live half is key-gated.
+- [x] Phase 4 learn→replay round-trip — **GREEN, both halves**: deterministic compile→replay offline (CI-enforced), AND the **full live learn→replay** (`npm run test:live`, real Anthropic Sonnet) verified 2026-06-17 — the agent learns the fixture form, compiles a parameterized playbook, and it replays with *different* data and no LLM.
 
 ### Sign-off
 - [x] Notes filled (versions, deviations, warnings, carried-forward).
@@ -110,4 +111,10 @@ Run this section literally, in order. A phase is **not done** until every box he
 - **Deviations from plan:** (1) recording reconstructed from `stagehand.history` (act/navigate entries carry `Action.selector/method/arguments`) rather than a bespoke recorder hook — this is the "does `agent()` expose a selector stream" kickoff question, resolved via `history`; **needs live confirmation** that the autonomous agent populates `history` with per-act selectors (if not, switch the learn loop to `observe()`→`act()`). (2) extraction field→selector derived by `observe("the element showing <field>")` per field (cached) — live-tunable. (3) `format_change`-reuse deferred (DECISIONS #23).
 - **Benign warnings:** `npm install` emitted one `ERESOLVE overriding peer dependency` (browser-driver peer) + a `node-domexception` deprecation — both transitive to Stagehand, non-blocking; install succeeded, tsc/eslint/tests clean.
 - **Carried forward:** (a) **live learn-path validation + tuning** via `test:live` with `ANTHROPIC_API_KEY` (the autonomous-agent history fidelity + extraction-selector observe are the two spots most likely to need iteration); (b) real-site demo + token-cost note (DECISIONS #22); (c) `format_change`-reuse optimization (DECISIONS #23); (d) guardrails firing end-to-end against a live agent.
-- **Cost note (economics, plan §risks):** not yet measured — the agent run logs `usage` (input/output tokens) at compile; capture the learn-vs-replay cost ratio during the first `test:live` run.
+- **Cost note (economics, plan §risks):** measured live — learn ≈ **11,490 input + 590 output tokens** (Sonnet, structured `act()` flow), replay = **0 LLM**. (The earlier autonomous-`agent()` attempt cost ~71k input for a worse result — another reason structured `act()` won.)
+
+**Live validation (2026-06-17) — `npm run test:live` against a real Anthropic key:**
+- **GREEN.** Full learn→replay round-trip passes: the agent learns the fixture lookup form, compiles a parameterized playbook (`fill {{data.license_number}}` / `{{data.last_name}}` → submit → `wait_for` → extract), and it replays with *different* data (`Z999000`/`Okonkwo`) deterministically, no LLM. Run via `node --env-file=.env node_modules/vitest/vitest.mjs run test/integration/agent-live.test.ts` (vitest doesn't auto-load `.env`).
+- **Three live fixes** (see DECISIONS #24): (1) Stagehand abort-signal needs `experimental:true`+`disableAPI:true`; (2) Anthropic base URL normalized to `/v1` (a conventional root `ANTHROPIC_BASE_URL` in the shell 404'd `@ai-sdk/anthropic`); (3) **learn flow switched from autonomous `agent()` to structured `act()`** — the autonomous agent's `history` records fills as value-less clicks (empty `required_data_keys`, no `{{data.*}}`), so it can't compile a replayable playbook; structured `act()` returns the operated selector and the data key is known directly.
+- **As-built deviation:** `provenance.ts` (value-identity reverse index) and `action-recorder.ts` (history→action mapping) are **retained** (match the spec §12 module layout; encode the mechanisms for a future autonomous/history-recording path) but the structured `act()` flow doesn't wire them — it sets `dataProvenance` directly from the per-field `act` call. Recorded here, not silently.
+- **Resolved kickoff risk:** "does `agent()` expose a selector-level stream?" — answered NO; structured `act()` is the chosen path.

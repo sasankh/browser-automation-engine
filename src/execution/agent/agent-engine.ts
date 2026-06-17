@@ -6,8 +6,6 @@ import type { ErrorCode } from '../../types/errors';
 import type { RunData } from '../playbook/step-interpreter';
 import type { ResolvedModel } from '../../model/model-gateway';
 import type { AgentLearnResult, ExtractionFields, RecordedAction } from './recorded-action';
-import { ProvenanceIndex } from './provenance';
-import { recordActions, type StagehandHistoryLike } from './action-recorder';
 import { assertAllowedUrl, SsrfError, isOffSite } from '../../browser/ssrf-guard';
 import { runLogger } from '../../shared/logger';
 
@@ -113,20 +111,27 @@ export class AgentEngine {
       await page.goto(input.url, { waitUntil: 'domcontentloaded' });
       await this.assertNoCaptcha(stagehand);
 
-      // Drive the task. Data values are passed in the instruction so the agent fills them; the
-      // recorder links each typed value back to its data key by identity (never page-text scan).
-      const provenance = new ProvenanceIndex(input.data);
-      const agent = stagehand.agent();
-      const result = await agent.execute({
-        instruction: this.composeInstruction(input.instruction, input.data),
-        maxSteps: input.config.agentMaxSteps,
-        signal: input.signal,
-      });
-      if (input.signal.aborted) throw new AgentError('timeout', 'agent run exceeded the wall clock');
-      await this.assertNoCaptcha(stagehand);
-      if (!result.completed || !result.success) {
-        throw new AgentError('agent_gave_up', result.message || 'agent did not complete the task');
+      // Structured learn: drive the form one field at a time with act(). Stagehand returns the selector
+      // it operated on, and we already KNOW each value's data key (we're filling data[key]), so
+      // provenance is exact and direct (ARCHITECTURE §4 — from the call, never a page-text scan). We do
+      // NOT record from the autonomous agent(): its history surfaces fills as value-less clicks, which
+      // don't compile into a replayable {{data.*}} stream.
+      const recorded: RecordedAction[] = [{ op: 'goto', url: input.url }];
+      for (const [key, raw] of Object.entries(input.data)) {
+        this.checkAbort(input.signal);
+        const value = String(raw);
+        const r = await stagehand.act(`Type "${value}" into the ${humanizeKey(key)} field.`);
+        const selector = pickActedSelector(r.actions);
+        if (selector) recorded.push({ op: 'fill', selector, value, dataProvenance: key });
+        else runLogger(input.runId).warn({ key }, 'no selector captured for a fill — field dropped');
       }
+
+      this.checkAbort(input.signal);
+      const submit = await stagehand.act('Click the button that submits or searches the form.');
+      const submitSelector = submit.actions[0]?.selector;
+      if (submitSelector) recorded.push({ op: 'click', selector: submitSelector });
+      await page.waitForLoadState('domcontentloaded').catch(() => undefined);
+      await this.assertNoCaptcha(stagehand);
 
       // Domain confinement: the agent must not have wandered off the target's registrable domain.
       const finalUrl = stagehand.context.activePage()?.url() ?? input.url;
@@ -134,18 +139,14 @@ export class AgentEngine {
         throw new AgentError('navigation_failed', `agent navigated off-site to ${finalUrl}`);
       }
 
-      const history = (await stagehand.history) as unknown as StagehandHistoryLike[];
-      const recorded = this.buildRecording(history, provenance, input.url);
-
       let extraction: { fields: ExtractionFields | null; result: Record<string, unknown> | null; errors: AgentLearnResult['extractionErrors'] } =
         { fields: null, result: null, errors: [] };
       if (input.outputFormat) {
         extraction = await this.extract(stagehand, input.outputFormat, target.toString());
+        // Make replay wait for the results to render before the structural extract runs.
+        const anchor = extraction.fields ? Object.values(extraction.fields)[0] : undefined;
+        if (anchor) recorded.push({ op: 'wait_for', selector: anchor });
       }
-
-      const usage = result.usage
-        ? { inputTokens: result.usage.input_tokens, outputTokens: result.usage.output_tokens }
-        : null;
 
       if (input.config.captureEvidence) await this.captureEvidence(stagehand, input.runId);
 
@@ -155,7 +156,7 @@ export class AgentEngine {
         scopeSelector: null,
         result: extraction.result,
         extractionErrors: extraction.errors,
-        usage,
+        usage: await this.readUsage(stagehand),
       };
     } catch (err) {
       if (err instanceof AgentError) throw err;
@@ -165,26 +166,21 @@ export class AgentEngine {
     }
   }
 
-  /** Prepend the leading navigation (we drove the first goto, not the agent) if not already recorded. */
-  private buildRecording(
-    history: StagehandHistoryLike[],
-    provenance: ProvenanceIndex,
-    url: string,
-  ): RecordedAction[] {
-    const { actions, skipped } = recordActions(history, provenance);
-    if (skipped.length > 0) {
-      // Surfaced, never silent — an op the agent used that the fixed vocabulary can't express is a gap.
-      runLogger('agent').warn({ skipped }, 'agent actions not mappable to the op vocabulary');
-    }
-    if (actions[0]?.op !== 'goto') actions.unshift({ op: 'goto', url });
-    return actions;
+  private checkAbort(signal: AbortSignal): void {
+    if (signal.aborted) throw new AgentError('timeout', 'agent run exceeded the wall clock');
   }
 
-  private composeInstruction(instruction: string, data: RunData): string {
-    const keys = Object.keys(data);
-    if (keys.length === 0) return instruction;
-    const inputs = keys.map((k) => `${k} = ${String(data[k])}`).join(', ');
-    return `${instruction}\n\nUse exactly these input values where the form asks for them: ${inputs}.`;
+  /** Sum act/extract/observe token usage for the economics note (learn cost vs ~free replay). */
+  private async readUsage(stagehand: Stagehand): Promise<{ inputTokens: number; outputTokens: number } | null> {
+    try {
+      const m = await stagehand.metrics;
+      return {
+        inputTokens: m.actPromptTokens + m.extractPromptTokens + m.observePromptTokens,
+        outputTokens: m.actCompletionTokens + m.extractCompletionTokens + m.observeCompletionTokens,
+      };
+    } catch {
+      return null;
+    }
   }
 
   private async assertNoCaptcha(stagehand: Stagehand): Promise<void> {
@@ -218,7 +214,7 @@ export class AgentEngine {
 
     const fields: ExtractionFields = {};
     for (const field of Object.keys(outputFormat)) {
-      const instruction = `the element showing ${field}`;
+      const instruction = `the element showing the ${humanizeKey(field)}`;
       const cached = await this.deps.selectorCache.get(url, instruction);
       if (cached) {
         fields[field] = cached.selector;
@@ -251,6 +247,17 @@ export class AgentEngine {
       // evidence is best-effort; never fail a run over it
     }
   }
+}
+
+/** "license_number" → "license number" for a natural-language act()/observe() instruction. */
+function humanizeKey(key: string): string {
+  return key.replace(/[_-]+/g, ' ').trim();
+}
+
+/** From an act() result, the selector of the element actually operated on (prefer a fill/type action). */
+function pickActedSelector(actions: ReadonlyArray<{ selector: string; method?: string }>): string | undefined {
+  const typed = actions.find((a) => ['fill', 'type', 'settext'].includes((a.method ?? '').toLowerCase()));
+  return (typed ?? actions[actions.length - 1] ?? actions[0])?.selector;
 }
 
 /** Map an `output_format` hint object to a Zod schema for Stagehand `extract()`. */

@@ -98,10 +98,13 @@ export class ModelGateway {
   private providerBaseUrl(provider: ModelProvider): string | undefined {
     if (provider === 'ollama') return this.env.OLLAMA_BASE_URL || undefined;
     if (provider === 'openai') return this.env.OPENAI_BASE_URL || undefined;
-    // Stagehand v3.5 hands the AI SDK an Anthropic base URL *without* `/v1`, so calls 404 at
-    // `api.anthropic.com/messages`. Pin the correct `/v1` endpoint (env-overridable). Verified live:
-    // with this set the request hits `/v1/messages` and the model resolves.
-    if (provider === 'anthropic') return this.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1';
+    // `@ai-sdk/anthropic` (what Stagehand calls) appends `/messages`, so it needs a base URL ending in
+    // `/v1`. But the conventional `ANTHROPIC_BASE_URL` is the ROOT (the Anthropic SDK appends `/v1`
+    // itself), so a root value 404s at `/messages`. Normalize: ensure a version suffix is present.
+    if (provider === 'anthropic') {
+      const root = (this.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, '');
+      return /\/v\d+$/.test(root) ? root : `${root}/v1`;
+    }
     return undefined;
   }
 }

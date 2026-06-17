@@ -16,9 +16,14 @@ describe('ModelGateway — provider/name resolution + require-explicit (DECISION
     expect(r.baseURL).toBe('https://api.anthropic.com/v1');
   });
 
-  it('honors an ANTHROPIC_BASE_URL override', () => {
+  it('honors an ANTHROPIC_BASE_URL override that already has /v1', () => {
     const r = gateway({ ANTHROPIC_API_KEY: 'x', ANTHROPIC_BASE_URL: 'https://proxy/v1' }).resolve('anthropic/claude-sonnet-4-6');
     expect(r.baseURL).toBe('https://proxy/v1');
+  });
+
+  it('normalizes a ROOT ANTHROPIC_BASE_URL (Anthropic-SDK convention) to the AI-SDK /v1 endpoint', () => {
+    const r = gateway({ ANTHROPIC_API_KEY: 'x', ANTHROPIC_BASE_URL: 'https://api.anthropic.com/' }).resolve('anthropic/claude-sonnet-4-6');
+    expect(r.baseURL).toBe('https://api.anthropic.com/v1');
   });
 
   it('require-explicit: a null/empty model is no_model (→ validation_error upstream)', () => {

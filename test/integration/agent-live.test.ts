@@ -102,15 +102,14 @@ suite('Phase 4 — learn → replay round-trip (LIVE agent)', () => {
     'learns a lookup from an instruction, then replays the compiled playbook with different data, no LLM',
     async () => {
       // LEARN (agent, real model).
-      const learn = await poll(
-        await submit({
-          instruction: 'Look up a license: type the license number and last name into the form and search.',
-          url: `${fixture.url}/lookup`,
-          data: { license_number: 'A123456', last_name: 'Nguyen' },
-          output_format: { license_status: 'string', holder_name: 'string', expiry_date: 'string (ISO date)' },
-          config: { model: MODEL },
-        }),
-      );
+      const learnRunId = await submit({
+        instruction: 'Look up a license: type the license number and last name into the form and search.',
+        url: `${fixture.url}/lookup`,
+        data: { license_number: 'A123456', last_name: 'Nguyen' },
+        output_format: { license_status: 'string', holder_name: 'string', expiry_date: 'string (ISO date)' },
+        config: { model: MODEL },
+      });
+      const learn = await poll(learnRunId);
       expect(learn.meta.status).toBe('completed');
       expect(learn.meta.mode).toBe('agent');
       expect(learn.meta.playbook_id).toBeTruthy();
