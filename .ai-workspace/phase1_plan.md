@@ -12,7 +12,7 @@ A running service that accepts a run, persists it, and returns a valid `{meta, r
 - **Zod** as the single source of truth for the payload schema; the inferred type is the payload type used everywhere (no hand-written duplicate).
 - **Postgres** via a thin query layer (`pg` + a migration tool, e.g. `node-pg-migrate`). No ORM — the schema is small and the `active_version` transaction wants explicit SQL.
 - **Execution is stubbed** this phase: `POST /v1/runs` persists `queued` and the (stub) worker immediately marks the run `failed` with a `not_implemented` error code, OR returns a canned envelope. Pick one, record it in Notes. The point is to exercise persistence + envelope, not behavior.
-- Config via the `ConfigResolver` from day one, even though few keys are enforced yet — so later phases never retrofit `process.env` reads.
+- Config via the `ConfigResolver` from day one, even though few keys are enforced yet — so later phases never retrofit `process.env` reads. The env surface includes the per-provider model keys, and **`model` has no built-in default** (require-explicit, DECISIONS #11) — the resolver reflects this now even though the agent that consumes it is Phase 4.
 
 ## File-by-file (indicative, per ARCHITECTURE §12)
 
@@ -23,7 +23,7 @@ A running service that accepts a run, persists it, and returns a valid `{meta, r
 - `src/intake/idempotency.ts` — `(caller, idempotency_key)` lookup/insert.
 - `src/persistence/runs/run-store.pg.ts` — create/update run rows, status transitions.
 - `src/shared/envelope.ts` — build `{meta, result}`; enforce `result` = caller-shape-or-null.
-- `src/shared/ids.ts` — ULID/KSUID prefixed IDs.
+- `src/shared/ids.ts` — ULID prefixed IDs (lib `ulidx`; DECISIONS #9).
 - `src/types/*` — payload, envelope, run, status/error enums.
 - `migrations/0001_init.sql` — `playbooks`, `playbook_versions`, `runs`, `idempotency_keys` (ARCHITECTURE §5.1).
 - `Dockerfile`, `docker-compose.yml` (engine + Postgres).

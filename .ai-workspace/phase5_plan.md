@@ -16,7 +16,7 @@ Two resilience mechanisms that both lean on Phases 2+4. **Self-heal** = a runner
 ## File-by-file (indicative)
 
 - `src/orchestrator/heal.ts` — failure classification per the §7 table; heal flow; version bump + pointer move; `consecutive_heal_failures` increment + `unhealthy` flagging at threshold.
-- `src/execution/playbook/llm-fallback.ts` — one-shot extract of missing fields via `REPLAY_LLM_FALLBACK_MODEL`; surfacing.
+- `src/execution/playbook/llm-fallback.ts` — one-shot extract of missing fields via the **`ModelGateway`** (model = `REPLAY_LLM_FALLBACK_MODEL`, `provider/name`; DECISIONS #11), never importing a provider SDK directly; surfacing.
 - `src/transport/routes/playbooks.ts` — extend with `?health=unhealthy` filter.
 
 ## Key behaviors

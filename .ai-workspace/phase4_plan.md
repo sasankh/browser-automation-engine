@@ -8,8 +8,9 @@ The expensive path: learn a task from an instruction and **compile it into a pla
 
 ## Design decisions
 
-- **Stagehand in `LOCAL` mode**, own Anthropic key, browser via the Phase-3 pool/context factory. No Browserbase.
-- **This is the only place Stagehand and the Anthropic SDK are imported** (EXECUTION_STANDARDS §3 layering). The Phase-2 runner stays LLM-free.
+- **Stagehand in `LOCAL` mode**, pointed at the resolved provider/model through the **`ModelGateway`** (Anthropic/OpenAI/Google/local — DECISIONS #11); provider key/endpoint from env. Browser via the Phase-3 pool/context factory. No Browserbase.
+- **`execution/agent/` and the `ModelGateway` are the only place Stagehand and the model-provider SDKs (Vercel AI SDK + `@ai-sdk/*`) are imported** (EXECUTION_STANDARDS §3 layering). The Phase-2 runner stays LLM-free.
+- **Phase 0 carry-in (do at kickoff, do not pre-build now):** add the explicit `ModelGateway` build task + module on the Vercel AI SDK; wire the **require-explicit `model`** rule (agent runs validate `model` = `provider/name` upfront → `validation_error` if absent, DECISIONS #11); and **verify Stagehand 3.5's `agent()` provider coverage** (it may be narrower than the `act`/`observe`/`extract` primitives).
 - **Provenance by value identity, not text match** (ARCHITECTURE §4). The orchestrator builds a value→key reverse index from `data` before the run; the recorder tags each typed value with its `data` key by identity through the call. This is the mechanism that makes `{{data.*}}` templating correct — a value that also appears as static page text must not be mis-templated. Do not simplify to string replace.
 - **Compile to the Phase-2 op vocabulary.** The compiler emits exactly the declarative ops the runner already interprets — if the agent does something the vocabulary can't express, that's a vocabulary gap to close, not a reason to embed code.
 

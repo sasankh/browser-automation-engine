@@ -24,7 +24,7 @@ Now the expensive path: learn a task from an instruction and **compile it into a
 ### Tasks
 
 **Stagehand integration**
-- [ ] `AgentEngine` wrapping `stagehand.agent()`/`act()`/`observe()`/`extract()` in `LOCAL` mode with the configured model + Anthropic key.
+- [ ] `AgentEngine` wrapping `stagehand.agent()`/`act()`/`observe()`/`extract()` in `LOCAL` mode, with the configured `model` (`provider/name`) resolved via the `ModelGateway` (Anthropic/OpenAI/Google/local). *(Kickoff adds the `ModelGateway` build task + the require-explicit-`model` validation — DECISIONS #11.)*
 - [ ] Browser launched through the Phase-3 pool/context factory (channel, proxy flag, headless per config) — agent runs are just another isolated run.
 - [ ] Guardrails: `agent_max_steps` budget, wall-clock timeout (reuses Phase-3 timeout), domain confinement (no off-site nav unless `allow_offsite`), `captcha_detected` short-circuit.
 - [ ] `SelectorCache` (local impl): persist Stagehand `observe()` results so repeat agent operations skip inference; S3 backend deferred to Phase 6.
