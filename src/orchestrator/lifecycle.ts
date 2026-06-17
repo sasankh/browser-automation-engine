@@ -95,6 +95,40 @@ export class Lifecycle {
     }
   }
 
+  /**
+   * Gate agent work — which manages its OWN browser (Stagehand v3.5, DECISIONS #21) — through the
+   * same semaphore + wall clock as pool runs, but WITHOUT acquiring a pool context. On timeout the
+   * AbortSignal fires so the agent cancels its execution and tears its browser down.
+   */
+  async executeAgent<T>(
+    timeoutMs: number,
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<ExecOutcome<T>> {
+    try {
+      const settled = (await this.queue.add(async (): Promise<ExecOutcome<T>> => {
+        const ac = new AbortController();
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          const workP = work(ac.signal).then((value): ExecOutcome<T> => ({ kind: 'done', value }));
+          workP.catch(() => undefined);
+          const timeoutP = new Promise<ExecOutcome<T>>((resolve) => {
+            timer = setTimeout(() => {
+              ac.abort();
+              resolve({ kind: 'timeout' });
+            }, timeoutMs);
+          });
+          return await Promise.race([workP, timeoutP]);
+        } finally {
+          if (timer) clearTimeout(timer);
+          ac.abort(); // ensure the agent tears down if it is somehow still running
+        }
+      })) as ExecOutcome<T> | undefined;
+      return settled ?? { kind: 'timeout' };
+    } finally {
+      this.releaseReservation();
+    }
+  }
+
   /** Stop admitting new work and wait for in-flight runs to settle, up to the grace window. */
   async drain(graceMs: number): Promise<void> {
     this.draining = true;

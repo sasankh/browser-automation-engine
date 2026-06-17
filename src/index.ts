@@ -10,6 +10,9 @@ import { LocalEvidenceStore } from './persistence/evidence/evidence.local';
 import { PlaybookRunner } from './execution/playbook/runner';
 import { BrowserPool } from './browser/pool';
 import { Lifecycle } from './orchestrator/lifecycle';
+import { ModelGateway } from './model/model-gateway';
+import { AgentEngine } from './execution/agent/agent-engine';
+import { LocalSelectorCache } from './persistence/cache/selector-cache';
 import { RunOrchestrator } from './orchestrator/run-orchestrator';
 import { buildServer } from './transport/http-server';
 import { checkMemoryBudget } from './shared/memory';
@@ -28,6 +31,12 @@ async function main(): Promise<void> {
   const playbooks = new PlaybookRepository(db, playbookStore);
   const evidence = new LocalEvidenceStore(env.storageLocalPath);
   const runner = new PlaybookRunner(evidence);
+  const modelGateway = new ModelGateway(process.env);
+  const agentEngine = new AgentEngine({
+    evidence,
+    selectorCache: new LocalSelectorCache(env.storageLocalPath),
+    env: process.env,
+  });
 
   const orchestrator = new RunOrchestrator({
     env,
@@ -37,6 +46,8 @@ async function main(): Promise<void> {
     playbooks,
     runner,
     lifecycle,
+    modelGateway,
+    agentEngine,
   });
 
   const app = buildServer({ db, orchestrator, playbooks, evidence, lifecycle });

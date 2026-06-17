@@ -20,6 +20,9 @@ export interface FinishRunInput {
   error?: RunError | null;
   extractionErrors?: ExtractionError[] | null;
   evidenceCaptured?: boolean;
+  /** Agent runs learn a playbook during the run — record it on finish (replay runs leave these unset). */
+  playbookId?: string | null;
+  playbookVersion?: number | null;
 }
 
 interface RunRow {
@@ -69,9 +72,21 @@ export class RunStore {
     const extractionErrors = input.extractionErrors ? JSON.stringify(input.extractionErrors) : null;
     await this.db.query(
       `UPDATE runs
-       SET status = $2, result = $3, error = $4, extraction_errors = $5, evidence_uri = $6, finished_at = now()
+       SET status = $2, result = $3, error = $4, extraction_errors = $5, evidence_uri = $6,
+           playbook_id = COALESCE($7, playbook_id),
+           playbook_version = COALESCE($8, playbook_version),
+           finished_at = now()
        WHERE id = $1`,
-      [id, input.status, input.result ?? null, input.error ?? null, extractionErrors, evidenceUri],
+      [
+        id,
+        input.status,
+        input.result ?? null,
+        input.error ?? null,
+        extractionErrors,
+        evidenceUri,
+        input.playbookId ?? null,
+        input.playbookVersion ?? null,
+      ],
     );
   }
 

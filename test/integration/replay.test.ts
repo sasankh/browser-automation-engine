@@ -16,6 +16,9 @@ import { LocalEvidenceStore } from '../../src/persistence/evidence/evidence.loca
 import { PlaybookRunner } from '../../src/execution/playbook/runner';
 import { BrowserPool } from '../../src/browser/pool';
 import { Lifecycle } from '../../src/orchestrator/lifecycle';
+import { ModelGateway } from '../../src/model/model-gateway';
+import { AgentEngine } from '../../src/execution/agent/agent-engine';
+import { LocalSelectorCache } from '../../src/persistence/cache/selector-cache';
 import { RunOrchestrator } from '../../src/orchestrator/run-orchestrator';
 import { buildServer } from '../../src/transport/http-server';
 import { newPlaybookId } from '../../src/shared/ids';
@@ -50,6 +53,8 @@ beforeAll(async () => {
     playbooks,
     runner,
     lifecycle,
+    modelGateway: new ModelGateway(process.env),
+    agentEngine: new AgentEngine({ evidence, selectorCache: new LocalSelectorCache(env.storageLocalPath), env: process.env }),
   });
   app = buildServer({ db, orchestrator, playbooks, evidence, lifecycle });
   await app.ready();

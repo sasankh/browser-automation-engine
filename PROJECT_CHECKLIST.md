@@ -199,6 +199,8 @@ Make the engine safe under simultaneous load **before** the agent exists, so iso
 
 ## Phase 4 — Agent Engine (Stagehand) & Playbook Compilation
 
+> **Status: ✅ COMPLETE (fixture-complete)** — Plan & Verify gate passed by observation (2026-06-17): 62 tests (61 + 1 opt-in live), incl. the deterministic **compile→replay round-trip** with different data + provenance-vs-page-text + action-only + require-explicit-model 422 + SSRF/recorder units; dockerized cold-start (boot with agent deps, replay + 422 over HTTP). The **live** learn→replay round-trip is the opt-in `npm run test:live` (Anthropic key) — written, runs on the user's key. Granular tracker + Notes: [.ai-workspace/phase4_checklist.md](.ai-workspace/phase4_checklist.md). **Carried forward:** real-site demo + cost note, format-change-reuse optimization, live-path tuning (DECISIONS #22, #23). **Next: Phase 5 (on explicit go-ahead).**
+
 Now the expensive path: learn a task from an instruction and **compile it into a playbook** the Phase-2 runner can replay. Isolation (Phase 3) already holds, so the agent inherits it.
 
 ### Tasks

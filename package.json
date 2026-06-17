@@ -14,11 +14,13 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:live": "vitest run test/integration/agent-live.test.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "migrate": "tsx src/persistence/migrate.ts"
   },
   "dependencies": {
+    "@browserbasehq/stagehand": "^3.5.0",
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",
     "p-queue": "^9.3.0",

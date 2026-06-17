@@ -8,9 +8,11 @@ A **Universal Instruction-Driven Browser Automation Engine**: a self-hosted, Doc
 
 Read [PROJECT_SPEC.md](PROJECT_SPEC.md) (the *what* + external contract) and [ARCHITECTURE.md](ARCHITECTURE.md) (the *how* + internal layering) before doing substantive work. [ARCHITECTURE.md](ARCHITECTURE.md) §4 walks the core Record→Compile→Parameterize→Replay mechanism end to end.
 
-## Current state: spec stage, no code yet
+## Current state: Phases 0–4 built (deterministic replay + concurrency/isolation + agent learn→compile)
 
-There is **no source code, no `package.json`, and no commits** — only design docs and a phased build plan. Do not assume any command below runs yet; they are the *planned* interface and become real as phases land. Do not scaffold code unprompted: this project is built phase-by-phase under an explicit human go-ahead (see below).
+As of 2026-06-17, **Phases 0–4 have landed** (branches `phase-0`…`phase-4`): the Fastify/Zod/pg skeleton + `{meta,result}` envelope (P1), the deterministic zero-LLM playbook runner (P2), the concurrency core + request-isolation invariants (P3), and the Stagehand-v3.5 agent that learns a task and **compiles it into a playbook** the runner replays (P4). The two-speed thesis is real: learn once, replay free. Commands below are live. **Phase 5 (self-heal + surfaced LLM extraction fallback) onward is not built** — do not scaffold ahead; the project is built phase-by-phase under an explicit human go-ahead (see below), and each phase ends with a STOP.
+
+> The agent (learn) path uses **Stagehand v3.5, which owns its own CDP browser** (not the Phase-3 Playwright pool — DECISIONS #21); the deterministic replay path uses the Playwright `BrowserPool`. The live learn step needs a model key (`ANTHROPIC_API_KEY`) and is exercised opt-in via `npm run test:live`; the offline suite proves the compile→replay half with no LLM.
 
 ## Build discipline is mandatory — read before coding
 

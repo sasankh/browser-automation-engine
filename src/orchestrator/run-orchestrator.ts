@@ -6,11 +6,14 @@ import type { PlaybookRunner } from '../execution/playbook/runner';
 import type { Lifecycle } from './lifecycle';
 import { resolveBehaviorConfig, toEffectiveConfig } from '../intake/config-resolver';
 import type { BehaviorConfig } from '../intake/config-resolver';
-import { newRunId } from '../shared/ids';
+import { newRunId, newPlaybookId } from '../shared/ids';
 import type { Payload } from '../intake/payload-schema';
 import type { Envelope } from '../types/envelope';
 import type { RunData } from '../execution/playbook/step-interpreter';
 import type { PlaybookVersion } from '../execution/playbook/playbook-schema';
+import { ModelGateway, ModelConfigError } from '../model/model-gateway';
+import { AgentEngine, AgentError } from '../execution/agent/agent-engine';
+import { compilePlaybook } from '../execution/agent/compiler';
 import { runLogger } from '../shared/logger';
 
 /** With API_AUTH_MODE=none there is no caller identity — idempotency is global by key. */
@@ -31,6 +34,17 @@ export interface OrchestratorDeps {
   playbooks: PlaybookRepository;
   runner: PlaybookRunner;
   lifecycle: Lifecycle;
+  modelGateway: ModelGateway;
+  agentEngine: AgentEngine;
+}
+
+/** Inputs threaded into an agent (learn) run; `relearnPlaybookId` is set only on a force-relearn. */
+interface AgentArgs {
+  instruction: string;
+  url: string;
+  data: RunData;
+  outputFormat: Record<string, unknown> | null;
+  relearnPlaybookId: string | null;
 }
 
 /**
@@ -67,7 +81,7 @@ export class RunOrchestrator {
         maxRunTimeoutSeconds: this.deps.env.maxRunTimeoutSeconds,
       });
 
-      if (payload.playbook_id) {
+      if (payload.playbook_id && !behavior.force_relearn) {
         const resolved = await this.deps.playbooks.resolveForReplay(payload.playbook_id, payload.playbook_version);
         if (!resolved) {
           return { kind: 'rejected', http: 404, code: 'playbook_not_found', message: `playbook not found: ${payload.playbook_id}` };
@@ -100,7 +114,22 @@ export class RunOrchestrator {
         return { kind: 'accepted', run_id: runId };
       }
 
-      // instruction → agent stub (Phase 4); does not consume a browser slot.
+      // Agent (learn) path: a fresh instruction+url, or a forced relearn of an existing playbook.
+      const instruction = payload.instruction;
+      const url = payload.url;
+      if (!instruction || !url) {
+        return { kind: 'rejected', http: 422, code: 'validation_error', message: 'instruction and url are required to learn a playbook' };
+      }
+      // Require-explicit model (DECISIONS #11): validate upfront, before any browser launches.
+      try {
+        this.deps.modelGateway.validate(behavior.model);
+      } catch (err) {
+        if (err instanceof ModelConfigError) {
+          return { kind: 'rejected', http: 422, code: 'validation_error', message: err.message };
+        }
+        throw err;
+      }
+
       const data = (payload.data ?? {}) as RunData;
       const runId = newRunId();
       await this.deps.runs.createRun({
@@ -108,10 +137,18 @@ export class RunOrchestrator {
         effectiveConfig: toEffectiveConfig(behavior),
         dataKeys: Object.keys(data),
         callbackUrl: payload.callback_url ?? null,
+        mode: 'agent',
+        playbookId: payload.playbook_id ?? null,
       });
       const finalRunId = await this.claimIdempotency(payload, runId);
       if (finalRunId !== runId) return { kind: 'accepted', run_id: finalRunId };
-      void this.runStub(runId);
+
+      consumed = true; // executeAgent now owns the reservation (released when the run settles)
+      void this.executeAgent(
+        runId,
+        { instruction, url, data, outputFormat: payload.output_format ?? null, relearnPlaybookId: payload.playbook_id ?? null },
+        behavior,
+      );
       return { kind: 'accepted', run_id: runId };
     } finally {
       if (!consumed) this.deps.lifecycle.releaseReservation();
@@ -179,16 +216,93 @@ export class RunOrchestrator {
     }
   }
 
-  /** Agent path is Phase 4 — still stubbed (DECISIONS #12). */
-  private async runStub(runId: string): Promise<void> {
+  /**
+   * The learn path: drive the agent (its own browser, DECISIONS #21) under the wall clock, compile the
+   * recorded actions into a playbook, persist it (new playbook, or a new version on a forced relearn),
+   * and finish the run carrying the new playbook_id + version. Every failure classifies to a §7 code.
+   */
+  private async executeAgent(runId: string, args: AgentArgs, behavior: BehaviorConfig): Promise<void> {
     try {
-      await this.deps.runs.markRunning(runId);
-      await this.deps.runs.finishRun(runId, {
-        status: 'failed',
-        error: { code: 'internal_error', message: 'execution not implemented (agent path is Phase 4)' },
+      const model = this.deps.modelGateway.resolve(behavior.model); // already validated at intake
+      const outcome = await this.deps.lifecycle.executeAgent(
+        behavior.run_timeout_seconds * 1000,
+        async (signal) => {
+          await this.deps.runs.markRunning(runId);
+          return this.deps.agentEngine.run({
+            runId,
+            instruction: args.instruction,
+            url: args.url,
+            data: args.data,
+            outputFormat: args.outputFormat,
+            config: {
+              model,
+              agentMaxSteps: behavior.agent_max_steps,
+              headless: behavior.headless,
+              allowOffsite: behavior.allow_offsite,
+              proxyEnabled: behavior.proxy_enabled,
+              captureEvidence: behavior.evidence_capture,
+            },
+            signal,
+          });
+        },
+      );
+
+      if (outcome.kind === 'timeout') {
+        await this.deps.runs.finishRun(runId, {
+          status: 'failed',
+          error: { code: 'timeout', message: `agent run exceeded ${behavior.run_timeout_seconds}s wall clock` },
+        });
+        return;
+      }
+
+      const learn = outcome.value;
+      const body = compilePlaybook({
+        recorded: learn.recorded,
+        outputFormat: args.outputFormat,
+        extractionFields: learn.extractionFields,
+        scopeSelector: learn.scopeSelector,
       });
+
+      // Persist: a new playbook, or a new version on a forced relearn of an existing one.
+      let playbookId: string;
+      let version: number;
+      if (args.relearnPlaybookId) {
+        playbookId = args.relearnPlaybookId;
+        version = await this.deps.playbooks.addVersion(playbookId, body, 'agent_initial', runId);
+      } else {
+        playbookId = newPlaybookId();
+        await this.deps.playbooks.create({
+          id: playbookId,
+          url: args.url,
+          instruction: args.instruction,
+          createdBy: 'agent_initial',
+          runId,
+          body,
+        });
+        version = 1;
+      }
+
+      const hasErrors = learn.extractionErrors.length > 0;
+      await this.deps.runs.finishRun(runId, {
+        status: hasErrors ? 'completed_with_extraction_errors' : 'completed',
+        result: learn.result,
+        extractionErrors: hasErrors ? learn.extractionErrors : null,
+        evidenceCaptured: behavior.evidence_capture,
+        playbookId,
+        playbookVersion: version,
+      });
+      // Economics sanity (plan §risks): the agent run's token cost vs the ~free replay.
+      runLogger(runId).info(
+        { playbook_id: playbookId, version, usage: learn.usage },
+        'agent learn compiled to playbook',
+      );
     } catch (err) {
-      runLogger(runId).error({ err }, 'stub run failed');
+      const error =
+        err instanceof AgentError
+          ? { code: err.code, message: err.message }
+          : { code: 'internal_error' as const, message: `agent run crashed: ${String(err)}` };
+      runLogger(runId).error({ err }, 'agent run failed');
+      await this.deps.runs.finishRun(runId, { status: 'failed', error }).catch(() => undefined);
     }
   }
 }

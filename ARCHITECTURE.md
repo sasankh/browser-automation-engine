@@ -99,10 +99,10 @@ The engine is a modular monolith — one deployable, clean internal seams so com
 - **StepInterpreter** — maps each declarative op to Playwright calls; primary selector → `fallback_selectors` → `step_failed`. Evaluates `assertions`.
 - **StructuralExtractor** — pulls fields using stored selectors/scope from the playbook; pure DOM. Per-field success/failure feeds extraction status.
 - **LlmExtractFallback** — engaged only when structural extraction misses fields AND `REPLAY_LLM_FALLBACK=on`. Sends the page (DOM/screenshot) + output_format to the configured fallback model **via the `ModelGateway`**. **Always surfaced** (see §6.3) — the run is never silently "completed" when the LLM had to rescue it.
-- **AgentEngine** — wraps `stagehand.agent()`/`act()`/`observe()`/`extract()`, with Stagehand pointed at the resolved provider/model through the `ModelGateway`. Enforces guardrails (step budget, domain confinement, CAPTCHA short-circuit, wall clock).
+- **AgentEngine** — wraps Stagehand **v3.5** (`agent()`/`act()`/`observe()`/`extract()`), configured with the `model`/key resolved via the `ModelGateway`. Stagehand v3 is CDP-native and **owns its own browser** — one instance per agent run, disposed at run end (DECISIONS #21) — so agent runs do **not** use the Playwright `BrowserPool` (that stays the replay path's browser); both are isolated and both are gated by the `Lifecycle` (`executeAgent`: the semaphore + a wall-clock `AbortSignal` that cancels the agent on timeout). Enforces guardrails (step budget, domain confinement via `ssrf-guard`, CAPTCHA short-circuit, wall clock). The only module that imports Stagehand.
 - **ActionRecorder** — observes the agent: records each effective action as `{op, selector, fallback_selectors, description, dataProvenance}` in order. The provenance field is the link from a typed value back to its `data` key (§4).
 - **PlaybookCompiler** — turns the recorded action list into a version file: parameterizes values via provenance, attaches `output_format`, derives `required_data_keys`, writes the version + updates the index/meta.
-- **ModelGateway** — the single module where model-provider SDKs are imported (built on the Vercel AI SDK with `@ai-sdk/anthropic`/`openai`/`google`/`openai-compatible`). Resolves the `model` string (`provider/name`) to a provider client from **env-only** config (key + optional base URL), and is the only model entry point for both `AgentEngine` and `LlmExtractFallback`. **No built-in default** — a run that needs a model with none resolved fails `validation_error`. The deterministic runner/interpreter/structural-extractor never import it (zero-LLM path).
+- **ModelGateway** (`src/model/`) — resolves the `model` string (`provider/name`) to a provider + its **env-only** secret (key + optional base URL), and enforces **require-explicit**: there is no built-in default, so a run that needs a model with none resolved fails `validation_error`. As built in Phase 4 this is resolution + validation only — Stagehand bundles the Vercel AI SDK and owns the *agent's* model call; the gateway hands it the resolved `model`/key. The direct AI-SDK model client (for `LlmExtractFallback`) lands here in Phase 5. It is the only model entry point for both `AgentEngine` and `LlmExtractFallback`; the deterministic runner/interpreter/structural-extractor never import it (zero-LLM path).
 
 ### 3.5 Browser layer
 
@@ -459,7 +459,8 @@ src/
   orchestrator/   run-orchestrator.ts  resolution.ts  heal.ts  lifecycle.ts
   execution/
     playbook/     runner.ts  step-interpreter.ts  structural-extractor.ts  llm-fallback.ts
-    agent/        agent-engine.ts  action-recorder.ts  provenance.ts  compiler.ts
+    agent/        agent-engine.ts  action-recorder.ts  provenance.ts  compiler.ts  recorded-action.ts
+  model/          model-gateway.ts          # resolves model "provider/name" → provider+env key (DECISIONS #11)
   browser/        pool.ts  context-factory.ts  ssrf-guard.ts
   persistence/
     runs/         run-store.pg.ts
