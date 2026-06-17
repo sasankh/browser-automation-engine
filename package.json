@@ -21,6 +21,9 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.83",
+    "@aws-sdk/client-s3": "^3.1071.0",
+    "@aws-sdk/client-sqs": "^3.1071.0",
+    "@aws-sdk/s3-request-presigner": "^3.1071.0",
     "@browserbasehq/stagehand": "^3.5.0",
     "ai": "^5.0.204",
     "dotenv": "^17.4.2",

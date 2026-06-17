@@ -1,0 +1,50 @@
+# Phase 6 cloud topology (ARCHITECTURE §8.3): the same image split into an `api` task (HTTP →
+# validate/persist/enqueue) and a `worker` task (SQS consume → execute), sharing Postgres + S3 + SQS
+# (LocalStack). Overlay on the base compose, starting only the cloud services (NOT the `all` engine):
+#   docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d --build \
+#       postgres localstack fixture api worker
+services:
+  api:
+    build: .
+    depends_on:
+      postgres: { condition: service_healthy }
+      localstack: { condition: service_healthy }
+    environment:
+      SERVICE_MODE: api
+      PORT: 8080
+      DATABASE_URL: postgres://rote:rote@postgres:5432/rote
+      STORAGE_BACKEND: s3
+      S3_BUCKET: rote
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://localstack:4566
+      SQS_ENABLED: 'true'
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/rote-runs
+      SQS_RESULTS_QUEUE_URL: http://localstack:4566/000000000000/rote-results
+      API_AUTH_MODE: none
+    ports:
+      - '8081:8080' # host 8081 so it doesn't clash with the `all` engine on 8080
+
+  worker:
+    build: .
+    depends_on:
+      postgres: { condition: service_healthy }
+      localstack: { condition: service_healthy }
+    environment:
+      SERVICE_MODE: worker
+      PORT: 8080
+      DATABASE_URL: postgres://rote:rote@postgres:5432/rote
+      STORAGE_BACKEND: s3
+      S3_BUCKET: rote
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://localstack:4566
+      SQS_ENABLED: 'true'
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/rote-runs
+      SQS_RESULTS_QUEUE_URL: http://localstack:4566/000000000000/rote-results
+      SQS_VISIBILITY_TIMEOUT_SECONDS: 120
+      MAX_CONCURRENT_RUNS: 2
+      ALLOW_PRIVATE_TARGETS: 'true'
+      # For agent/heal runs in the worker (replay e2e doesn't need them, but a worker should be whole).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      CHROME_PATH: /ms-playwright/chromium-1228/chrome-linux/chrome
+      CHROMIUM_EXECUTABLE_PATH: /ms-playwright/chromium-1228/chrome-linux/chrome

@@ -18,6 +18,8 @@ import { AgentError } from '../execution/agent/agent-engine';
 import type { AgentRunner } from '../execution/agent/agent-engine';
 import { compilePlaybook } from '../execution/agent/compiler';
 import { healPolicyForError, shouldHealExtractionMiss } from './heal';
+import type { WebhookDispatcher } from '../shared/webhook';
+import type { JobEnqueuer, ResultsPublisher } from '../transport/sqs';
 import { runLogger } from '../shared/logger';
 
 /** With API_AUTH_MODE=none there is no caller identity — idempotency is global by key. */
@@ -42,6 +44,12 @@ export interface OrchestratorDeps {
   agentEngine: AgentRunner;
   /** Surfaced LLM extraction fallback (Phase 5) — engaged only when REPLAY_LLM_FALLBACK=on + a model. */
   fallback: LlmExtractFallback;
+  /** `enqueue` = the `api` transport (validate/persist/enqueue, no execution); default `inline` = `all`/`worker`. */
+  mode?: 'inline' | 'enqueue';
+  /** Required in `enqueue` mode — the run queue sender. */
+  enqueuer?: JobEnqueuer;
+  webhook?: WebhookDispatcher; // absent ⇒ no webhook delivery (tests / no-callback deployments)
+  results?: ResultsPublisher; // absent ⇒ no results-queue publish
 }
 
 /** Inputs threaded into an agent (learn) run; `relearnPlaybookId` is set only on a force-relearn. */
@@ -53,6 +61,19 @@ interface AgentArgs {
   relearnPlaybookId: string | null;
 }
 
+/** Result of validating + resolving a payload, shared by the inline, enqueue, and worker paths. */
+type Prepared =
+  | { kind: 'rejected'; rejection: Extract<SubmitResult, { kind: 'rejected' }> }
+  | { kind: 'idempotent'; runId: string }
+  | { kind: 'replay'; behavior: BehaviorConfig; playbookId: string; version: number; body: PlaybookVersion; data: RunData }
+  | { kind: 'agent'; behavior: BehaviorConfig; args: AgentArgs };
+
+const TERMINAL = new Set(['completed', 'completed_with_extraction_errors', 'failed']);
+
+function rej(http: number, code: string, message: string): Prepared {
+  return { kind: 'rejected', rejection: { kind: 'rejected', http, code, message } };
+}
+
 /**
  * The one transport-agnostic entry point (resolution logic, PROJECT_SPEC §5.3). A synchronous
  * capacity reservation is taken FIRST so backpressure is deterministic; it is consumed by the
@@ -62,102 +83,145 @@ interface AgentArgs {
 export class RunOrchestrator {
   constructor(private readonly deps: OrchestratorDeps) {}
 
+  /** The one transport-agnostic entry point. `enqueue` mode (the `api` task) persists + enqueues; */
+  /** `inline` mode (`all`) reserves a slot and executes. Both share `prepare` (PROJECT_SPEC §5.3). */
   async submit(payload: Payload): Promise<SubmitResult> {
     if (this.deps.lifecycle.isDraining) {
       return { kind: 'rejected', http: 503, message: 'engine is draining for shutdown' };
     }
-    // Synchronous capacity gate FIRST (before any await) — deterministic 429 backpressure.
-    if (!this.deps.lifecycle.tryReserve()) {
-      return {
-        kind: 'rejected',
-        http: 429,
-        message: 'too many concurrent runs; retry later',
-        retryAfterSeconds: RETRY_AFTER_SECONDS,
-      };
-    }
+    return this.deps.mode === 'enqueue' ? this.submitEnqueue(payload) : this.submitInline(payload);
+  }
 
+  /** `all`/HTTP: reserve a slot FIRST (deterministic 429), persist, execute inline. */
+  private async submitInline(payload: Payload): Promise<SubmitResult> {
+    if (!this.deps.lifecycle.tryReserve()) {
+      return { kind: 'rejected', http: 429, message: 'too many concurrent runs; retry later', retryAfterSeconds: RETRY_AFTER_SECONDS };
+    }
     let consumed = false;
     try {
-      if (payload.idempotency_key) {
-        const existing = await this.deps.idempotency.lookup(DEFAULT_CALLER, payload.idempotency_key);
-        if (existing) return { kind: 'accepted', run_id: existing };
-      }
-
-      const behavior = resolveBehaviorConfig(payload.config, this.deps.nodeEnv, {
-        maxRunTimeoutSeconds: this.deps.env.maxRunTimeoutSeconds,
-      });
-
-      if (payload.playbook_id && !behavior.force_relearn) {
-        const resolved = await this.deps.playbooks.resolveForReplay(payload.playbook_id, payload.playbook_version);
-        if (!resolved) {
-          return { kind: 'rejected', http: 404, code: 'playbook_not_found', message: `playbook not found: ${payload.playbook_id}` };
-        }
-        const data = (payload.data ?? {}) as RunData;
-        const missing = resolved.required_data_keys.filter((k) => !(k in data));
-        if (missing.length > 0) {
-          return { kind: 'rejected', http: 422, code: 'validation_error', message: `missing required data keys: ${missing.join(', ')}` };
-        }
-        const body = await this.deps.playbooks.loadVersion(payload.playbook_id, resolved.version);
-        if (!body) {
-          return { kind: 'rejected', http: 404, code: 'playbook_not_found', message: `playbook version body missing: ${payload.playbook_id} v${resolved.version}` };
-        }
-
-        const runId = newRunId();
-        await this.deps.runs.createRun({
-          id: runId,
-          effectiveConfig: toEffectiveConfig(behavior),
-          dataKeys: Object.keys(data),
-          callbackUrl: payload.callback_url ?? null,
-          mode: 'playbook',
-          playbookId: payload.playbook_id,
-          playbookVersion: resolved.version,
-        });
-        const finalRunId = await this.claimIdempotency(payload, runId);
-        if (finalRunId !== runId) return { kind: 'accepted', run_id: finalRunId };
-
-        consumed = true; // executePlaybook now owns the reservation (released when the run settles)
-        void this.executePlaybook(runId, payload.playbook_id, resolved.version, body, data, behavior);
-        return { kind: 'accepted', run_id: runId };
-      }
-
-      // Agent (learn) path: a fresh instruction+url, or a forced relearn of an existing playbook.
-      const instruction = payload.instruction;
-      const url = payload.url;
-      if (!instruction || !url) {
-        return { kind: 'rejected', http: 422, code: 'validation_error', message: 'instruction and url are required to learn a playbook' };
-      }
-      // Require-explicit model (DECISIONS #11): validate upfront, before any browser launches.
-      try {
-        this.deps.modelGateway.validate(behavior.model);
-      } catch (err) {
-        if (err instanceof ModelConfigError) {
-          return { kind: 'rejected', http: 422, code: 'validation_error', message: err.message };
-        }
-        throw err;
-      }
-
-      const data = (payload.data ?? {}) as RunData;
+      const prep = await this.prepare(payload);
+      if (prep.kind === 'rejected') return prep.rejection;
+      if (prep.kind === 'idempotent') return { kind: 'accepted', run_id: prep.runId };
       const runId = newRunId();
-      await this.deps.runs.createRun({
-        id: runId,
-        effectiveConfig: toEffectiveConfig(behavior),
-        dataKeys: Object.keys(data),
-        callbackUrl: payload.callback_url ?? null,
-        mode: 'agent',
-        playbookId: payload.playbook_id ?? null,
-      });
+      await this.createRunFor(prep, runId, payload);
       const finalRunId = await this.claimIdempotency(payload, runId);
       if (finalRunId !== runId) return { kind: 'accepted', run_id: finalRunId };
-
-      consumed = true; // executeAgent now owns the reservation (released when the run settles)
-      void this.executeAgent(
-        runId,
-        { instruction, url, data, outputFormat: payload.output_format ?? null, relearnPlaybookId: payload.playbook_id ?? null },
-        behavior,
-      );
+      consumed = true; // the execution path now owns the reservation (released when the run settles)
+      void this.dispatch(runId, prep, payload.callback_url ?? null);
       return { kind: 'accepted', run_id: runId };
     } finally {
       if (!consumed) this.deps.lifecycle.releaseReservation();
+    }
+  }
+
+  /** `api`: validate + persist(queued) + enqueue. NO reservation — SQS is the buffer (ARCHITECTURE §8.3). */
+  private async submitEnqueue(payload: Payload): Promise<SubmitResult> {
+    const prep = await this.prepare(payload);
+    if (prep.kind === 'rejected') return prep.rejection;
+    if (prep.kind === 'idempotent') return { kind: 'accepted', run_id: prep.runId };
+    const runId = newRunId();
+    await this.createRunFor(prep, runId, payload);
+    const finalRunId = await this.claimIdempotency(payload, runId);
+    if (finalRunId !== runId) return { kind: 'accepted', run_id: finalRunId };
+    if (!this.deps.enqueuer) {
+      await this.deps.runs.finishRun(runId, { status: 'failed', error: { code: 'internal_error', message: 'api mode without an enqueuer' } });
+      return { kind: 'rejected', http: 500, code: 'internal_error', message: 'queue not configured' };
+    }
+    await this.deps.enqueuer.enqueue({ runId, payload });
+    return { kind: 'accepted', run_id: runId };
+  }
+
+  /**
+   * Worker path: execute a run pulled from the queue, AWAITing completion so the consumer can ack only
+   * after the run settles (at-least-once + idempotent effects). `runId` is set when the `api` task
+   * pre-created the run; absent for direct-to-SQS ingestion (we create it).
+   */
+  async executeFromQueue(runId: string | null, payload: Payload): Promise<void> {
+    if (!this.deps.lifecycle.tryReserve()) throw new Error('no free slot for queued run');
+    let consumed = false;
+    try {
+      const prep = await this.prepare(payload);
+      const id = runId ?? newRunId();
+      if (prep.kind === 'idempotent') return; // a redelivered, already-handled message
+      if (prep.kind === 'rejected') {
+        // Validation failure on a queued message: record it on the run and ack (not an infinite retry).
+        await this.deps.runs
+          .finishRun(id, {
+            status: 'failed',
+            error: { code: (prep.rejection.code ?? 'validation_error') as RunError['code'], message: prep.rejection.message },
+          })
+          .catch(() => undefined);
+        return;
+      }
+      // Redelivery safety: if the api-created run already settled (worker crashed after finishRun,
+      // before ack), ack without re-running — never a duplicate playbook/version/evidence.
+      if (runId) {
+        const existing = await this.deps.runs.getEnvelope(runId);
+        if (existing && TERMINAL.has(existing.meta.status)) return;
+      }
+      if (!runId) await this.createRunFor(prep, id, payload);
+      consumed = true;
+      await this.dispatch(id, prep, payload.callback_url ?? null);
+    } finally {
+      if (!consumed) this.deps.lifecycle.releaseReservation();
+    }
+  }
+
+  /** Run a prepared plan (the execution path owns + releases the reservation). */
+  private dispatch(runId: string, prep: Extract<Prepared, { kind: 'replay' | 'agent' }>, callbackUrl: string | null): Promise<void> {
+    return prep.kind === 'replay'
+      ? this.executePlaybook(runId, prep.playbookId, prep.version, prep.body, prep.data, prep.behavior, callbackUrl)
+      : this.executeAgent(runId, prep.args, prep.behavior, callbackUrl);
+  }
+
+  /** Validate + resolve a payload into an executable plan (or a rejection / idempotent hit). */
+  private async prepare(payload: Payload): Promise<Prepared> {
+    if (payload.idempotency_key) {
+      const existing = await this.deps.idempotency.lookup(DEFAULT_CALLER, payload.idempotency_key);
+      if (existing) return { kind: 'idempotent', runId: existing };
+    }
+    const behavior = resolveBehaviorConfig(payload.config, this.deps.nodeEnv, { maxRunTimeoutSeconds: this.deps.env.maxRunTimeoutSeconds });
+
+    if (payload.playbook_id && !behavior.force_relearn) {
+      const resolved = await this.deps.playbooks.resolveForReplay(payload.playbook_id, payload.playbook_version);
+      if (!resolved) return rej(404, 'playbook_not_found', `playbook not found: ${payload.playbook_id}`);
+      const data = (payload.data ?? {}) as RunData;
+      const missing = resolved.required_data_keys.filter((k) => !(k in data));
+      if (missing.length > 0) return rej(422, 'validation_error', `missing required data keys: ${missing.join(', ')}`);
+      const body = await this.deps.playbooks.loadVersion(payload.playbook_id, resolved.version);
+      if (!body) return rej(404, 'playbook_not_found', `playbook version body missing: ${payload.playbook_id} v${resolved.version}`);
+      return { kind: 'replay', behavior, playbookId: payload.playbook_id, version: resolved.version, body, data };
+    }
+
+    const instruction = payload.instruction;
+    const url = payload.url;
+    if (!instruction || !url) return rej(422, 'validation_error', 'instruction and url are required to learn a playbook');
+    try {
+      this.deps.modelGateway.validate(behavior.model); // require-explicit model (DECISIONS #11)
+    } catch (err) {
+      if (err instanceof ModelConfigError) return rej(422, 'validation_error', err.message);
+      throw err;
+    }
+    const data = (payload.data ?? {}) as RunData;
+    return {
+      kind: 'agent',
+      behavior,
+      args: { instruction, url, data, outputFormat: payload.output_format ?? null, relearnPlaybookId: payload.playbook_id ?? null },
+    };
+  }
+
+  private async createRunFor(prep: Extract<Prepared, { kind: 'replay' | 'agent' }>, runId: string, payload: Payload): Promise<void> {
+    const data = prep.kind === 'replay' ? prep.data : prep.args.data;
+    const base = {
+      id: runId,
+      effectiveConfig: toEffectiveConfig(prep.behavior),
+      dataKeys: Object.keys(data),
+      callbackUrl: payload.callback_url ?? null,
+    };
+    if (prep.kind === 'replay') {
+      await this.deps.runs.createRun({ ...base, mode: 'playbook', playbookId: prep.playbookId, playbookVersion: prep.version });
+    } else {
+      await this.deps.runs.createRun({ ...base, mode: 'agent', playbookId: prep.args.relearnPlaybookId });
     }
   }
 
@@ -180,6 +244,7 @@ export class RunOrchestrator {
     body: PlaybookVersion,
     data: RunData,
     behavior: BehaviorConfig,
+    callbackUrl: string | null,
   ): Promise<void> {
     try {
       const outcome = await this.deps.lifecycle.execute(
@@ -242,6 +307,7 @@ export class RunOrchestrator {
         .catch(() => undefined);
     } finally {
       this.deps.lifecycle.releaseReservation(); // released ONCE per run (after any heal — DECISIONS #28)
+      await this.deliverResults(runId, callbackUrl); // webhook + results-queue, after the slot is freed
     }
   }
 
@@ -382,7 +448,7 @@ export class RunOrchestrator {
    * recorded actions into a playbook, persist it (new playbook, or a new version on a forced relearn),
    * and finish the run carrying the new playbook_id + version. Every failure classifies to a §7 code.
    */
-  private async executeAgent(runId: string, args: AgentArgs, behavior: BehaviorConfig): Promise<void> {
+  private async executeAgent(runId: string, args: AgentArgs, behavior: BehaviorConfig, callbackUrl: string | null): Promise<void> {
     try {
       const model = this.deps.modelGateway.resolve(behavior.model); // already validated at intake
       const outcome = await this.deps.lifecycle.executeAgent(
@@ -466,6 +532,28 @@ export class RunOrchestrator {
       await this.deps.runs.finishRun(runId, { status: 'failed', error }).catch(() => undefined);
     } finally {
       this.deps.lifecycle.releaseReservation(); // released ONCE per run (DECISIONS #28)
+      await this.deliverResults(runId, callbackUrl);
+    }
+  }
+
+  /**
+   * After a run settles: POST the envelope to `callback_url` (unsigned, retried — DECISIONS #30) and
+   * record `webhook_status`, and publish to the results queue if configured. Best-effort — a delivery
+   * failure never changes the run's own outcome.
+   */
+  private async deliverResults(runId: string, callbackUrl: string | null): Promise<void> {
+    try {
+      const envelope = await this.deps.runs.getEnvelope(runId);
+      if (!envelope) return;
+      if (this.deps.results) {
+        await this.deps.results.publish(envelope).catch((err: unknown) => runLogger(runId).warn({ err }, 'results-queue publish failed'));
+      }
+      if (callbackUrl && this.deps.webhook) {
+        const status = await this.deps.webhook.deliver(callbackUrl, envelope, runId);
+        await this.deps.runs.setWebhookStatus(runId, status);
+      }
+    } catch (err) {
+      runLogger(runId).warn({ err }, 'result delivery failed');
     }
   }
 }

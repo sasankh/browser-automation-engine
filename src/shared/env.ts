@@ -25,6 +25,16 @@ export interface EnvConfig {
   healFailureThreshold: number; // consecutive heal failures before health=unhealthy
   fallbackAsDriftSignal: boolean; // flag a playbook for re-learn after K fallback engagements
   fallbackDriftThreshold: number; // K
+  // Transports & storage backends (Phase 6).
+  sqsEnabled: boolean;
+  sqsQueueUrl: string | undefined;
+  sqsResultsQueueUrl: string | undefined; // optional: publish the envelope here on terminal
+  sqsVisibilityTimeoutSeconds: number; // per-receive visibility; the consumer heartbeats to extend it
+  awsRegion: string;
+  awsEndpointUrl: string | undefined; // custom endpoint (LocalStack in dev) for SQS + S3
+  s3Bucket: string | undefined;
+  s3Endpoint: string | undefined; // S3-specific endpoint override (defaults to awsEndpointUrl)
+  webhookMaxRetries: number;
 }
 
 function intEnv(env: NodeJS.ProcessEnv, key: string, def: number): number {
@@ -39,6 +49,11 @@ function boolEnv(env: NodeJS.ProcessEnv, key: string, def: boolean): boolean {
   const raw = env[key];
   if (raw === undefined || raw === '') return def;
   return raw === 'true' || raw === '1' || raw === 'on';
+}
+
+function strEnv(env: NodeJS.ProcessEnv, key: string): string | undefined {
+  const raw = env[key];
+  return raw === undefined || raw === '' ? undefined : raw;
 }
 
 function oneOf<T extends string>(env: NodeJS.ProcessEnv, key: string, allowed: readonly T[], def: T): T {
@@ -70,5 +85,14 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): EnvConfig {
     healFailureThreshold: intEnv(env, 'HEAL_FAILURE_THRESHOLD', 3),
     fallbackAsDriftSignal: boolEnv(env, 'FALLBACK_AS_DRIFT_SIGNAL', false),
     fallbackDriftThreshold: intEnv(env, 'FALLBACK_DRIFT_THRESHOLD', 5),
+    sqsEnabled: boolEnv(env, 'SQS_ENABLED', false),
+    sqsQueueUrl: strEnv(env, 'SQS_QUEUE_URL'),
+    sqsResultsQueueUrl: strEnv(env, 'SQS_RESULTS_QUEUE_URL'),
+    sqsVisibilityTimeoutSeconds: intEnv(env, 'SQS_VISIBILITY_TIMEOUT_SECONDS', 300),
+    awsRegion: env.AWS_REGION ?? 'us-east-1',
+    awsEndpointUrl: strEnv(env, 'AWS_ENDPOINT_URL'),
+    s3Bucket: strEnv(env, 'S3_BUCKET'),
+    s3Endpoint: strEnv(env, 'S3_ENDPOINT'),
+    webhookMaxRetries: intEnv(env, 'WEBHOOK_MAX_RETRIES', 3),
   });
 }

@@ -38,6 +38,10 @@ export function registerRunRoutes(
   app.get<{ Params: { id: string; file: string } }>(
     '/v1/runs/:id/evidence/:file',
     async (req, reply) => {
+      // S3 backend → 302 to a freshly-presigned URL; local → serve the bytes. Same engine path in both
+      // backends so `meta.evidence` is contract-uniform (DECISIONS #31).
+      const url = await evidence.urlFor(req.params.id, req.params.file);
+      if (url) return reply.redirect(url, 302);
       const buf = await evidence.readFile(req.params.id, req.params.file);
       if (!buf) return reply.code(404).send({ error: { message: 'evidence not found' } });
       const contentType = req.params.file.endsWith('.png') ? 'image/png' : 'text/html; charset=utf-8';

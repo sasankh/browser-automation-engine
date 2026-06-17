@@ -32,4 +32,9 @@ export class LocalEvidenceStore implements EvidenceStore {
       return null;
     }
   }
+
+  /** Local serves the bytes inline — no redirect. */
+  async urlFor(): Promise<string | null> {
+    return null;
+  }
 }

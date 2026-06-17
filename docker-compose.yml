@@ -58,5 +58,22 @@ services:
     environment:
       FIXTURE_PORT: '3100'
 
+  # AWS emulator (SQS + S3) for the Phase 6 cloud topology + integration tests (DECISIONS #29).
+  # The init hook creates the bucket + queues. Reachable in-network at http://localstack:4566.
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: s3,sqs
+      DEBUG: '0'
+    ports:
+      - '4566:4566'
+    volumes:
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh
+    healthcheck:
+      test: ['CMD-SHELL', 'awslocal sqs get-queue-url --queue-name rote-runs || exit 1']
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
 volumes:
   pgdata:

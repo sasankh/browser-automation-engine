@@ -118,6 +118,20 @@ FIXTURE_URL=http://fixture:3100 DATABASE_URL=postgres://rote:rote@localhost:5433
   STORAGE_LOCAL_PATH=./data npx tsx scripts/docker-heal-check.ts
 ```
 
+**Phase 6 cloud topology (`api` + `worker` + SQS + S3 via LocalStack)** — the production shape.
+Start only the cloud services (not the `all` engine), then drive `api → SQS → worker → S3` end to end:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d --build \
+  postgres localstack fixture api worker
+STORAGE_BACKEND=s3 S3_BUCKET=rote AWS_ENDPOINT_URL=http://localhost:4566 AWS_REGION=us-east-1 \
+  DATABASE_URL=postgres://rote:rote@localhost:5433/rote FIXTURE_URL=http://fixture:3100 \
+  npx tsx scripts/docker-cloud-check.ts
+```
+
+(LocalStack also runs in the base compose for the integration tests; `STORAGE_BACKEND=s3` +
+`SQS_ENABLED=true` switch the engine onto S3/SQS with no code change.)
+
 ## 7. Reading what happened
 
 - **Logs:** structured JSON, `run_id`-scoped; `data` values are redacted.

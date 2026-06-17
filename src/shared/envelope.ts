@@ -19,6 +19,7 @@ export interface BuildEnvelopeInput {
   evidence?: Evidence | null;
   error?: RunError | null;
   extraction_errors?: ExtractionError[] | null;
+  webhook_status?: string | null;
 }
 
 /**
@@ -47,6 +48,7 @@ export function buildEnvelope(
     effective_config: input.effective_config,
     error: input.error ?? null,
     extraction_errors: input.extraction_errors ?? null,
+    webhook_status: input.webhook_status ?? null,
   };
   return { meta, result };
 }

@@ -41,6 +41,7 @@ interface RunRow {
   self_healed: boolean;
   llm_fallback_used: boolean;
   fallback_fields: string[] | null;
+  webhook_status: string | null;
   effective_config: Record<string, unknown>;
   result: Record<string, unknown> | null;
   error: RunError | null;
@@ -71,6 +72,11 @@ export class RunStore {
 
   async markRunning(id: string): Promise<void> {
     await this.db.query(`UPDATE runs SET status = 'running', started_at = now() WHERE id = $1`, [id]);
+  }
+
+  /** Record webhook delivery outcome (Phase 6) — observable, never changes the run's own status. */
+  async setWebhookStatus(id: string, status: string): Promise<void> {
+    await this.db.query(`UPDATE runs SET webhook_status = $2 WHERE id = $1`, [id, status]);
   }
 
   async finishRun(id: string, input: FinishRunInput): Promise<void> {
@@ -136,6 +142,7 @@ export class RunStore {
         self_healed: row.self_healed,
         llm_fallback_used: row.llm_fallback_used,
         fallback_fields: row.fallback_fields,
+        webhook_status: row.webhook_status,
         error: row.error,
         extraction_errors: row.extraction_errors,
         evidence,

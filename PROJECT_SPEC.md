@@ -184,7 +184,8 @@ Every result — HTTP poll, webhook body, results queue message — is the same 
     "evidence": { "screenshot_url": "...", "html_url": "..." },
     "effective_config": { /* fully resolved config for this run */ },
     "error": null,                           // populated on failed runs — see §7
-    "extraction_errors": null                // populated on partial extraction — see §7
+    "extraction_errors": null,               // populated on partial extraction — see §7
+    "webhook_status": null                   // "delivered" | "failed" | null — callback_url delivery (Phase 6)
   },
   "result": { /* exactly the caller's output_format shape */ }   // or null
 }
@@ -194,7 +195,7 @@ Envelope invariants:
 
 - `result` is **only ever** the caller-defined shape, or `null`. The engine never injects fields into it.
 - All system information lives in `meta`. New meta fields may be added over time (additive, non-breaking).
-- Webhooks are HMAC-signed (header `X-Engine-Signature: sha256=...` over the raw body, per-caller secret) and retried with backoff (3 attempts) on non-2xx.
+- Webhooks are delivered to `callback_url` and retried with backoff (`WEBHOOK_MAX_RETRIES`, default 3) on non-2xx; the outcome is recorded in `meta.webhook_status`. **As built (Phase 6) they are unsigned** — HMAC `X-Engine-Signature` (per-caller secret over the raw body) is deferred to Phase 7 with caller auth (DECISIONS #30).
 
 ## 7. Statuses & Error Model
 

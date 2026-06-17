@@ -27,6 +27,8 @@ export interface Meta {
   effective_config: Record<string, unknown>;
   error: RunError | null;
   extraction_errors: ExtractionError[] | null;
+  /** Webhook delivery outcome when a `callback_url` was given (Phase 6): `delivered` | `failed` | null. */
+  webhook_status: string | null;
 }
 
 /** The universal envelope. `result` is ONLY ever the caller's output_format shape or null. */

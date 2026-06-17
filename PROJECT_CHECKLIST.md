@@ -285,6 +285,8 @@ Two resilience mechanisms that both lean on Phases 2+4. Self-heal = runner failu
 
 ## Phase 6 — Transports & Storage Backends (webhooks, SQS, S3, modes)
 
+> **Status: ✅ COMPLETE — cloud-e2e-verified** — Plan & Verify gate passed by observation (2026-06-17). Offline (83 tests, 3 live-skipped): webhook deliver/retry→failed, SQS api→worker e2e + redelivery-idempotency + DLQ (LocalStack), S3 adapter round-trips, backend-swap (full replay on S3 + evidence 302→presigned). **Dockerized cloud topology (`docker-compose.cloud.yml`, LocalStack): `api → SQS → worker → S3` end-to-end PASS** (`scripts/docker-cloud-check.ts`). One orchestrator + one `prepare()` serve HTTP and SQS — payload→envelope byte-identical. Webhook unsigned (#30), evidence 302→presigned (#31), LocalStack for AWS emulation (#29). **Carried forward:** webhook HMAC signing (Phase 7 + auth), `evidence_inline` base64. Granular tracker + Notes: [.ai-workspace/phase6_checklist.md](.ai-workspace/phase6_checklist.md). **Next: Phase 7 (on explicit go-ahead).**
+
 Swap the local edges for production ones, and split the process roles. The core is unchanged — these are interchangeable adapters around it.
 
 ### Tasks
