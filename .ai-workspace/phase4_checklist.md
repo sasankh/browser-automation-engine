@@ -7,14 +7,14 @@
 
 Reality drifts; this gate exists because earlier phases may have changed assumptions.
 
-- [ ] Re-read [EXECUTION_STANDARDS.md](../EXECUTION_STANDARDS.md) in full.
-- [ ] Re-read [phase4_plan.md](./phase4_plan.md) and this checklist end to end.
-- [ ] Re-read the referenced master sections: PROJECT_SPEC.md §9.1, §5.2 · ARCHITECTURE.md §4 (record→compile→parameterize), §3.4.
-- [ ] Confirm the **Phase 3 Plan & Verify gate actually passed** — don't trust the checkbox; spot-check that Phase 3's exit condition holds against the code as built (EXECUTION_STANDARDS §7).
-- [ ] Reconcile the plan against the codebase **as actually built** — note any drift from earlier-phase assumptions.
-- [ ] Verify library/API choices are still current (Stagehand, Playwright, Fastify, Anthropic SDK, pg, Zod) — pin versions in the plan's Notes.
-- [ ] Surface every open question / ambiguity / trade-off to the user. Contract-affecting ambiguity is a STOP-and-ask.
-- [ ] Update the plan + checklist for anything learned, then get the user's **explicit go-ahead**. Only then execute.
+- [x] Re-read [EXECUTION_STANDARDS.md](../EXECUTION_STANDARDS.md) in full.
+- [x] Re-read [phase4_plan.md](./phase4_plan.md) and this checklist end to end.
+- [x] Re-read the referenced master sections: PROJECT_SPEC.md §9.1, §5.2 · ARCHITECTURE.md §4 (record→compile→parameterize), §3.4.
+- [x] Confirm the **Phase 3 Plan & Verify gate actually passed** — don't trust the checkbox; spot-check that Phase 3's exit condition holds against the code as built (EXECUTION_STANDARDS §7). — verified this session: 27 tests green incl. isolation @600, dockerized cold-start load gate clean, no module-level run state.
+- [x] Reconcile the plan against the codebase **as actually built** — note any drift from earlier-phase assumptions. — `CreatedBy` has `agent_initial`/`format_change`, `RunMode` has `agent`, `model`/`agent_max_steps` resolved, instruction path is the stub to replace. **Drift found:** the plan assumed the agent runs on the Phase-3 Playwright pool — impossible with Stagehand v3.5 (see below); resolved as DECISIONS #21.
+- [x] Verify library/API choices are still current (Stagehand, Playwright, Fastify, Anthropic SDK, pg, Zod) — pin versions in the plan's Notes. — Stagehand `3.5.0` is npm `latest` (v3 CDP-native, Playwright optional peer); pinned in plan Kickoff notes. Others unchanged from Phase 3.
+- [x] Surface every open question / ambiguity / trade-off to the user. Contract-affecting ambiguity is a STOP-and-ask. — 3 surfaced + answered: Stagehand integration (v3.5, Stagehand owns browser), agent test model (Anthropic Sonnet, env key, opt-in), real-site scope (fixture-now, defer).
+- [x] Update the plan + checklist for anything learned, then get the user's **explicit go-ahead**. Only then execute. — plan + checklist + DECISIONS #21–#22 updated; **awaiting explicit "start Phase 4" before any code.**
 
 ---
 
@@ -25,7 +25,7 @@ Now the expensive path: learn a task from an instruction and **compile it into a
 
 **Stagehand integration**
 - [ ] `AgentEngine` wrapping `stagehand.agent()`/`act()`/`observe()`/`extract()` in `LOCAL` mode, with the configured `model` (`provider/name`) resolved via the `ModelGateway` (Anthropic/OpenAI/Google/local). *(Kickoff adds the `ModelGateway` build task + the require-explicit-`model` validation — DECISIONS #11.)*
-- [ ] Browser launched through the Phase-3 pool/context factory (channel, proxy flag, headless per config) — agent runs are just another isolated run.
+- [ ] Agent browser launched by **Stagehand v3.5 itself** in `env: LOCAL` (one instance per run = one isolated session; `localBrowserLaunchOptions` carries headless/proxy/args + the Docker Chromium `executablePath`/`channel`) — NOT the Phase-3 Playwright pool (DECISIONS #21). Concurrency + wall-clock still gated by the Phase-3 `Lifecycle`; the pool remains the replay browser.
 - [ ] Guardrails: `agent_max_steps` budget, wall-clock timeout (reuses Phase-3 timeout), domain confinement (no off-site nav unless `allow_offsite`), `captcha_detected` short-circuit.
 - [ ] `SelectorCache` (local impl): persist Stagehand `observe()` results so repeat agent operations skip inference; S3 backend deferred to Phase 6.
 
@@ -52,7 +52,7 @@ Now the expensive path: learn a task from an instruction and **compile it into a
 - Parameterization correctness: a `data` value that also appears as static page text is NOT mis-templated (provenance, not string-match).
 - Action-only instruction (no format) compiles a `type:action` playbook; replay returns `result:null`.
 - Guardrails fire: step-budget exhaustion, off-site nav block, and CAPTCHA short-circuit each produce the right error code.
-- Compiled playbook for one real Phase-0 site replays correctly.
+- ~~Compiled playbook for one real Phase-0 site replays correctly.~~ **Deferred (DECISIONS #22)** — fixture proves the mechanism this phase; real-site learn+replay + token-cost note carried forward to run once a key/site is wired.
 
 ### ▣ Plan & Verify gate — Phase 4
 - **Plan check:** Does the compiled playbook for a real site actually generalize — i.e., does a replay with *different* input data work, not just a replay of the exact learned values? If parameterization is wrong, fix the provenance mechanism now; everything downstream assumes correct templating.
@@ -92,7 +92,9 @@ Run this section literally, in order. A phase is **not done** until every box he
 
 > Empty Notes after a phase is a red flag, not a clean bill (EXECUTION_STANDARDS §1.5).
 
-- Pinned versions:
-- Deviations from plan (+ why):
-- Benign warnings observed:
-- Open items carried forward:
+**Kickoff (2026-06-17) — pre-build:**
+- **Pinned versions (to install at build):** `@browserbasehq/stagehand@^3.5.0` (npm `latest`; v3 CDP-native), Vercel AI SDK `ai` + `@ai-sdk/anthropic` (+ `@ai-sdk/openai`/`@ai-sdk/google`/`@ai-sdk/openai-compatible` defined-but-not-exercised). `playwright@^1.61.0` unchanged (replay path). Re-confirm with `npm view` before pinning.
+- **Deviations from plan (+ why):** agent browser is **Stagehand-owned (CDP)**, not the Phase-3 Playwright pool — Stagehand v3.5 (latest stable) won't accept an external Page (issue #1392). User-confirmed (DECISIONS #21). Concurrency/timeout still via the Phase-3 `Lifecycle`.
+- **Benign warnings observed:** —
+- **Open items carried forward:** (a) real-site learn+replay demo + token-cost note (DECISIONS #22); (b) build-time check: does `agent()` expose a selector-level action stream for compilation, or orchestrate `observe()`→`act()` instead (record the choice); (c) `@ai-sdk/*` providers beyond Anthropic are wired but only Anthropic is exercised this phase.
+- **Master-doc sync (do at gate):** ARCHITECTURE §3.4 (AgentEngine browser = Stagehand-CDP) + §8 (agent path browser mechanism) reconcile as-built; CLAUDE.md mentions "Stagehand driving the configured LLM provider" — confirm wording still holds.
