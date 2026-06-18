@@ -30,15 +30,15 @@ The contract is sacred: the **payload shape, the `{meta, result}` envelope, the 
 
 - **TypeScript strict.** No `any` (use `unknown` + narrowing, or a Zod-inferred type). Exported functions get explicit return types. No `@ts-ignore`/`@ts-expect-error` without a Notes entry.
 - **Layering (import rules, from `ARCHITECTURE.md` §3 and §12):**
-  - `execution/playbook/` (runner, step interpreter, structural extractor) imports **no** Stagehand and **no** Anthropic SDK — it is the zero-LLM path and must stay that way. A Stagehand import here is a Phase Review failure.
-  - `execution/agent/` is the only place Stagehand and the Anthropic SDK are imported.
+  - `execution/playbook/` (runner, step interpreter, structural extractor) imports **no** Stagehand and **no** model-provider SDKs — it is the zero-LLM path and must stay that way (the surfaced LLM fallback is the one gated exception and calls models only through the `ModelGateway`, never importing a provider SDK directly). A Stagehand import here is a Phase Review failure.
+  - `execution/agent/` (and the `ModelGateway`) is the only place Stagehand and the model-provider SDKs (Vercel AI SDK + `@ai-sdk/*`, the Anthropic SDK among them) are imported.
   - `persistence/` exposes interfaces (`PlaybookStore`, `EvidenceStore`, `RunStore`, `SelectorCache`); everything above it is backend-agnostic and must not branch on `local` vs `s3`/`postgres` itself.
   - `transport/` (Fastify routes, SQS consumer) contains **no** business logic — it validates, hands a job to the orchestrator, and serializes the envelope back. One orchestrator serves both transports.
   - `intake/` (validator, config resolver, idempotency, auth) and `orchestrator/` never import `transport/`.
 - **Isolation is a code-level invariant, not a config (`ARCHITECTURE.md` §8.1):** no module-level mutable run state, ever. A run's context (`run_id`, bound `data`, resolved config, recorder, evidence paths) is threaded explicitly as an argument. One Playwright `BrowserContext` per run; **never** reuse or pool a `Page`/`BrowserContext`/Stagehand instance across runs. A `let currentRun`-style global is an automatic Phase Review failure.
 - **Data provenance (`ARCHITECTURE.md` §4):** `data` values become `{{data.key}}` in playbooks by **value-identity tracking through the call**, never by scanning page text. Don't "simplify" this to a string replace — it silently mis-templates.
 - **Naming:** `camelCase` functions/variables, `PascalCase` types/classes, `UPPER_SNAKE` module constants and env vars. Files `camelCase.ts`. Named exports, one concern per module.
-- **Error posture:** the engine degrades into a clean `failed` / `completed_with_extraction_errors` envelope, it never throws past the service boundary. Every external failure (target site, browser crash, storage, Anthropic API) is caught, classified to an error code from the §7 set, and surfaced in `meta.error` — never an uncaught 500 with a stack trace to the caller. `logger.warn` for recoverable oddities.
+- **Error posture:** the engine degrades into a clean `failed` / `completed_with_extraction_errors` envelope, it never throws past the service boundary. Every external failure (target site, browser crash, storage, the LLM provider API) is caught, classified to an error code from the §7 set, and surfaced in `meta.error` — never an uncaught 500 with a stack trace to the caller. `logger.warn` for recoverable oddities.
 - **Comments:** only for non-obvious constraints (e.g., "provenance is by value identity, not text match — see ARCHITECTURE §4"). No narration.
 - **Config & tunables:** all behavior knobs go through the `ConfigResolver` (`payload.config > env > default`, `PROJECT_SPEC.md` §10). Never read `process.env` directly in business logic, and never inline a magic timeout/limit. Capacity limits (`MAX_CONCURRENT_RUNS`, `MAX_QUEUE_DEPTH`, `BROWSER_RECYCLE_RUNS`, `MAX_RUN_TIMEOUT_SECONDS`) are **env-only** and must not be payload-overridable.
 - **Migrations:** any change to the Postgres schema (`ARCHITECTURE.md` §5.1) ships as a numbered migration in the same commit, and the migration runs clean against a DB created from the previous migration. Never edit a shipped migration in place.
@@ -54,7 +54,7 @@ The contract is sacred: the **payload shape, the `{meta, result}` envelope, the 
 ## 5. Verification discipline
 
 - `npx tsc --noEmit` must be clean **before every commit** — zero errors, no new warnings introduced silently.
-- The test suite (`vitest`/`jest`) must be green before a phase's gate passes. Integration tests run against the **bundled fixture site** fully offline (only the Anthropic API may be live, and only in agent-mode tests).
+- The test suite (`vitest`/`jest`) must be green before a phase's gate passes. Integration tests run against the **bundled fixture site** fully offline (only the configured LLM provider's API may be live, and only in agent-mode tests).
 - Each checklist verify-item has a command or manual scenario and a **"done means"** — observe that exact outcome (the row appears, the `429` returns, the second run sees only its own cookie). If the outcome differs, the item is NOT done: fix or record divergence.
 - **Cold-start rule:** a phase's gate re-runs key scenarios after a fresh `docker compose down && up` (or a fresh process start) — not against a warm dev server whose in-memory state can mask a persistence or startup bug.
 - **The two release-blocking tests** (`PROJECT_CHECKLIST.md` close-out) must pass and stay passing once their phase lands:

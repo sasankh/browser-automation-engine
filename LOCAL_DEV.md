@@ -4,9 +4,9 @@
 
 ## 1. Prerequisites
 
-- Node 22 (match the version pinned in `.nvmrc` / `package.json` engines).
+- Node 24 (latest LTS; match the version pinned in `.nvmrc` / `package.json` engines).
 - Docker + Docker Compose.
-- An Anthropic API key (only needed for agent-mode work; replay/runner work needs none).
+- A model-provider key/endpoint (only needed for agent-mode work — e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or a local `OLLAMA_BASE_URL`; replay/runner work needs none).
 
 ## 2. First run
 
@@ -29,11 +29,16 @@ Migrations run automatically on engine start (or via a documented `npm run migra
 ```env
 SERVICE_MODE=all
 PORT=8080
-DATABASE_URL=postgres://engine:engine@postgres:5432/engine
+DATABASE_URL=postgres://rote:rote@postgres:5432/rote   # in-compose; host-run dev/tests use localhost:5433
 STORAGE_BACKEND=local
 STORAGE_LOCAL_PATH=/data
 CACHE_BACKEND=local
-ANTHROPIC_API_KEY=            # required only for agent/heal/fallback work
+# Model providers (env-only) — pick per-run via config.model="provider/name"; only for agent/heal/fallback
+CONFIG_MODEL=                 # required for agent/heal/fallback runs, e.g. anthropic/claude-... or ollama/llama3.1
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+GOOGLE_GENERATIVE_AI_API_KEY=
+OLLAMA_BASE_URL=             # e.g. http://localhost:11434/v1 — local, no external call
 SQS_ENABLED=false
 MAX_CONCURRENT_RUNS=3
 MAX_QUEUE_DEPTH=20
@@ -55,13 +60,14 @@ curl -X POST localhost:8080/v1/runs -H 'content-type: application/json' -d '{
 # → 202 { meta: { run_id } } ; then GET /v1/runs/{run_id}
 ```
 
-**Learn a new task (needs ANTHROPIC_API_KEY):**
+**Learn a new task (needs a model — set `CONFIG_MODEL` or `config.model`, plus the matching provider key):**
 
 ```bash
 curl -X POST localhost:8080/v1/runs -H 'content-type: application/json' -d '{
   "instruction": "Look up the license and get its details",
   "url": "http://fixture-site:3000/lookup",
   "data": { "license_number": "A123456", "last_name": "Nguyen" },
+  "config": { "model": "anthropic/claude-..." },
   "output_format": { "license_status": "string", "holder_name": "string" }
 }'
 ```
@@ -70,7 +76,7 @@ Point `url` at the bundled fixture site for offline work, or a real Phase-0 test
 
 ## 5. The fixture site
 
-`test/fixtures/site` is a local express app with a lookup→results flow, an action-only form, and a mutated variant (for heal tests). Bring it up via the compose test profile (confirm the exact command at Phase 2). Integration tests run fully offline against it.
+`test/fixtures/site` is a local express app with a lookup→results flow, an action-only form, and a mutated variant (for heal tests), plus isolation endpoints (`/iso/set`→`/iso/apply`→`/iso/read`, which stamp a per-run token into the context's cookie + localStorage and read it back) and timing endpoints (`/slow?ms=`, `/hang`) used by the Phase 3 concurrency/isolation tests. Bring it up via the compose test profile (confirm the exact command at Phase 2). Integration tests run fully offline against it.
 
 ## 6. Tests
 
@@ -79,6 +85,52 @@ npm test                 # unit + integration (offline)
 npx tsc --noEmit         # must be clean before every commit
 npm run test:live        # opt-in: real agent runs vs fixture (needs API key)
 ```
+
+Crank the release-blocking isolation test in CI via `ISO_CONCURRENCY` / `ISO_ROUNDS`
+(`ISO_CONCURRENCY=24 ISO_ROUNDS=100 npx vitest run test/integration/concurrency.test.ts`).
+
+**Phase 3 cold-start load + isolation gate** — drive the dockerized engine over real HTTP
+(seeds an isolation playbook, fires sequential + concurrent replays, asserts zero
+cross-contamination and that saturation returns to 0):
+
+```bash
+docker compose down -v && docker compose up --build -d
+FIXTURE_URL=http://fixture:3100 DATABASE_URL=postgres://rote:rote@localhost:5433/rote \
+  STORAGE_LOCAL_PATH=./data ENGINE_URL=http://localhost:8080 npx tsx scripts/phase3-load.ts
+```
+
+**Phase 4 in-Docker live agent gate** — a real learn→replay against the dockerized engine,
+proving the agent path works *inside* the container (Chromium-in-image, model egress).
+Needs a funded `ANTHROPIC_API_KEY` in `.env` (compose interpolates it into the engine; the
+container also gets `CHROME_PATH` + `ALLOW_PRIVATE_TARGETS`):
+
+```bash
+docker compose up --build -d
+npx tsx scripts/docker-agent-check.ts
+```
+
+**Phase 5 in-Docker self-heal + fallback gate** — a real mutate→heal→v2-replay and a surfaced
+LLM fallback against the dockerized engine (same `ANTHROPIC_API_KEY` prereq):
+
+```bash
+docker compose up --build -d
+FIXTURE_URL=http://fixture:3100 DATABASE_URL=postgres://rote:rote@localhost:5433/rote \
+  STORAGE_LOCAL_PATH=./data npx tsx scripts/docker-heal-check.ts
+```
+
+**Phase 6 cloud topology (`api` + `worker` + SQS + S3 via LocalStack)** — the production shape.
+Start only the cloud services (not the `all` engine), then drive `api → SQS → worker → S3` end to end:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d --build \
+  postgres localstack fixture api worker
+STORAGE_BACKEND=s3 S3_BUCKET=rote AWS_ENDPOINT_URL=http://localhost:4566 AWS_REGION=us-east-1 \
+  DATABASE_URL=postgres://rote:rote@localhost:5433/rote FIXTURE_URL=http://fixture:3100 \
+  npx tsx scripts/docker-cloud-check.ts
+```
+
+(LocalStack also runs in the base compose for the integration tests; `STORAGE_BACKEND=s3` +
+`SQS_ENABLED=true` switch the engine onto S3/SQS with no code change.)
 
 ## 7. Reading what happened
 
@@ -93,7 +145,7 @@ npm run test:live        # opt-in: real agent runs vs fixture (needs API key)
 |---|---|
 | `/v1/health` db not up | Postgres not ready / wrong `DATABASE_URL` |
 | `422` on a replay | missing `required_data_keys` for that playbook (check `GET /v1/playbooks/{id}`) |
-| agent run errors with no API key | `ANTHROPIC_API_KEY` unset |
+| agent run errors with no model | `model` unset (no `config.model`/`CONFIG_MODEL`) or the matching provider key unset |
 | `captcha_detected` | the target site is bot-walled — pick a different test site |
 | `429` on submit | `MAX_QUEUE_DEPTH` reached — expected under burst; raise limits or back off |
 | OOM under load | `MAX_CONCURRENT_RUNS` too high for the box (~2GB/run) |

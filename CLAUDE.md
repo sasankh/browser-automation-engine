@@ -4,13 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A **Universal Instruction-Driven Browser Automation Engine**: a self-hosted, Dockerized service that performs browser tasks on any website from natural-language instructions. The defining idea is **two-speed execution** — the first run of a task uses an AI agent (Stagehand + Claude API) to figure it out and **compiles the result into a versioned, parameterized "playbook"**; every later run replays that playbook with plain Playwright, no LLM, near-zero cost. When a playbook breaks (site redesign), the agent **self-heals** it into a new version. The engine is domain-agnostic — callers supply the task, target, inputs, and output shape.
+A **Universal Instruction-Driven Browser Automation Engine**: a self-hosted, Dockerized service that performs browser tasks on any website from natural-language instructions. The defining idea is **two-speed execution** — the first run of a task uses an AI agent (Stagehand driving a configured LLM provider — Anthropic, OpenAI, Google, or a local model) to figure it out and **compiles the result into a versioned, parameterized "playbook"**; every later run replays that playbook with plain Playwright, no LLM, near-zero cost. When a playbook breaks (site redesign), the agent **self-heals** it into a new version. The engine is domain-agnostic — callers supply the task, target, inputs, and output shape.
 
 Read [PROJECT_SPEC.md](PROJECT_SPEC.md) (the *what* + external contract) and [ARCHITECTURE.md](ARCHITECTURE.md) (the *how* + internal layering) before doing substantive work. [ARCHITECTURE.md](ARCHITECTURE.md) §4 walks the core Record→Compile→Parameterize→Replay mechanism end to end.
 
-## Current state: spec stage, no code yet
+## Current state: Phases 0–4 built (deterministic replay + concurrency/isolation + agent learn→compile)
 
-There is **no source code, no `package.json`, and no commits** — only design docs and a phased build plan. Do not assume any command below runs yet; they are the *planned* interface and become real as phases land. Do not scaffold code unprompted: this project is built phase-by-phase under an explicit human go-ahead (see below).
+As of 2026-06-17, **Phases 0–4 have landed** (branches `phase-0`…`phase-4`): the Fastify/Zod/pg skeleton + `{meta,result}` envelope (P1), the deterministic zero-LLM playbook runner (P2), the concurrency core + request-isolation invariants (P3), and the Stagehand-v3.5 agent that learns a task and **compiles it into a playbook** the runner replays (P4). The two-speed thesis is real: learn once, replay free. Commands below are live. **Phase 5 (self-heal + surfaced LLM extraction fallback) onward is not built** — do not scaffold ahead; the project is built phase-by-phase under an explicit human go-ahead (see below), and each phase ends with a STOP.
+
+> The agent (learn) path uses **Stagehand v3.5, which owns its own CDP browser** (not the Phase-3 Playwright pool — DECISIONS #21); the deterministic replay path uses the Playwright `BrowserPool`. The live learn step needs a model key (`ANTHROPIC_API_KEY`) and is exercised opt-in via `npm run test:live`; the offline suite proves the compile→replay half with no LLM.
 
 ## Build discipline is mandatory — read before coding
 
@@ -34,8 +36,8 @@ These are correctness requirements, not style preferences. Breaking one is a Pha
 - **The contract is sacred.** The request payload shape, the `{ meta, result }` response envelope, the status vocabulary, and the error-code set ([PROJECT_SPEC.md](PROJECT_SPEC.md) §5–§7) are the public surface every caller integrates against. `result` is **only ever** the caller's `output_format` shape or `null` — all system info lives in `meta`, new `meta` fields are additive only. Changing the contract is a STOP-and-ask, never a quiet edit.
 - **Playbooks are data, never code.** A playbook is declarative JSON interpreted by a fixed op vocabulary (`goto`/`click`/`fill`/`select`/`extract`/… — [PROJECT_SPEC.md](PROJECT_SPEC.md) §8.2). Nothing learned by the LLM is ever `eval`'d / `Function()`'d. Adding a capability means extending the interpreter, not embedding code in a playbook body.
 - **Layering / import rules** ([ARCHITECTURE.md](ARCHITECTURE.md) §3, §12):
-  - `execution/playbook/` (runner, step interpreter, structural extractor) is the **zero-LLM path** — it imports **no Stagehand and no Anthropic SDK**. A Stagehand import here is an automatic review failure.
-  - `execution/agent/` is the **only** place Stagehand and the Anthropic SDK are imported.
+  - `execution/playbook/` (runner, step interpreter, structural extractor) is the **zero-LLM path** — it imports **no Stagehand and no model-provider SDKs** (the surfaced LLM extraction fallback is the one gated exception, and it calls models only through the `ModelGateway`, never importing a provider SDK directly). A Stagehand import here is an automatic review failure.
+  - `execution/agent/` (and the `ModelGateway`) is the **only** place Stagehand and the model-provider SDKs (Vercel AI SDK + `@ai-sdk/*`; the Anthropic SDK is one of them) are imported.
   - `persistence/` exposes interfaces (`PlaybookStore`, `EvidenceStore`, `RunStore`, `SelectorCache`); everything above is backend-agnostic and must not branch on `local` vs `s3`/`postgres`.
   - `transport/` (Fastify routes, SQS consumer) holds **no business logic** — validate, hand a job to the one `RunOrchestrator`, serialize the envelope back. Both transports share one orchestrator.
 - **Request isolation** ([ARCHITECTURE.md](ARCHITECTURE.md) §8.1): **one Playwright `BrowserContext` per run**, created at start and closed at end; **never** pool/reuse a `Page`/`BrowserContext`/Stagehand instance across runs (the "reuse the page to save startup time" optimization is explicitly forbidden — it is *the* way cross-request contamination gets introduced). **No module-level mutable run state** — a run's context (`run_id`, bound `data`, resolved config, recorder, evidence paths) is threaded explicitly as an argument. A `let currentRun`-style global is an automatic failure.
@@ -52,7 +54,7 @@ Once their phase lands, these must pass and stay passing in every later phase (a
 
 ## Tech stack & layout (planned)
 
-- **Runtime:** TypeScript / Node 22 (strict mode — no `any`; use `unknown` + narrowing or Zod-inferred types). Stagehand is TS-native, which drove the runtime choice.
+- **Runtime:** TypeScript / Node 24 (latest LTS; strict mode — no `any`; use `unknown` + narrowing or Zod-inferred types). Stagehand is TS-native, which drove the runtime choice.
 - **Server:** Fastify; **validation:** Zod; **logging:** pino (structured JSON, `run_id`-scoped, redacted).
 - **Browser:** Playwright + Chromium; agent layer uses Stagehand.
 - **Store:** PostgreSQL everywhere for run records + playbook index (transactional `active_version` pointer moves); playbook *bodies* and evidence are blobs in local FS or S3. Schema in [ARCHITECTURE.md](ARCHITECTURE.md) §5.1; any schema change ships as a numbered migration in the same commit and is never edited in place.
@@ -73,4 +75,4 @@ npm run test:live             # opt-in: real agent runs vs fixture (needs ANTHRO
 npm run migrate               # Postgres migrations (also run automatically on engine start)
 ```
 
-Integration tests run offline against a bundled express **fixture site** (`test/fixtures/site`) with lookup→results, action-only, and mutated (heal-test) variants — only the Anthropic API is ever live, and only in agent-mode tests. Replay/runner work needs no API key. To run a single test, use the underlying runner's filter (e.g. `npx vitest run <file>` / `-t <name>`) once the test tooling is chosen in Phase 1.
+Integration tests run offline against a bundled express **fixture site** (`test/fixtures/site`) with lookup→results, action-only, and mutated (heal-test) variants — only the configured LLM provider's API is ever live, and only in agent-mode tests. Replay/runner work needs no API key. To run a single test, use the underlying runner's filter (e.g. `npx vitest run <file>` / `-t <name>`) once the test tooling is chosen in Phase 1.

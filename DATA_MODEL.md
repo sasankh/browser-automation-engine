@@ -52,6 +52,7 @@ CREATE TABLE runs (
   self_healed        BOOLEAN NOT NULL DEFAULT false,
   llm_fallback_used  BOOLEAN NOT NULL DEFAULT false,
   effective_config   JSONB NOT NULL,
+  result             JSONB,                        -- extracted output_format shape (migration 0002); null for action/failed
   error              JSONB,
   extraction_errors  JSONB,
   data_keys          TEXT[] NOT NULL DEFAULT '{}',  -- keys only; values never stored unless STORE_RUN_INPUTS
@@ -128,7 +129,8 @@ Declarative, interpreted by the runner. **Nothing here is ever executed as code.
     { "op": "select",   "selector": "#type",   "value": "Physician" },   // literal: process, not input
     { "op": "click",    "selector": "button[type=submit]" },
     { "op": "wait_for", "selector": ".results-table", "timeout_ms": 15000 },
-    { "op": "extract",  "schema_ref": "output_format", "scope_selector": ".results-table" }
+    { "op": "extract",  "schema_ref": "output_format", "scope_selector": ".results-table",
+      "fields": { "license_status": ".status", "holder_name": ".holder", "expiry_date": ".expiry" } }
   ],
   "assertions": [
     { "after_step": 5, "expect": "url_matches", "pattern": "results" }
@@ -149,7 +151,7 @@ Declarative, interpreted by the runner. **Nothing here is ever executed as code.
 | `wait_for` | `selector` | `timeout_ms` | |
 | `wait_ms` | `ms` | | fixed wait (use sparingly) |
 | `scroll` | | `selector`, `to` | |
-| `extract` | `schema_ref` | `scope_selector` | binds to `output_format`; extraction-type only |
+| `extract` | `schema_ref`, `fields` | `scope_selector` | binds to `output_format`; extraction-type only. `fields` maps each `output_format` key → a selector (relative to `scope_selector`) — agent-written in Phase 4, hand-authored in Phase 2 (DECISIONS #14) |
 | `screenshot` | | `label` | evidence aid |
 
 Each step records `description` (agent intent) and optional `fallback_selectors` (alternates from `observe()`), tried before declaring `step_failed`. **Parameterization is by value provenance, not text match** (`ARCHITECTURE.md` §4) — a `data` value becomes `{{data.key}}`; an agent-chosen literal (e.g. selecting "Physician") is stored literally.
@@ -199,6 +201,7 @@ Each step records `description` (agent intent) and optional `fallback_selectors`
         "timeout_ms": { "type": "integer", "minimum": 0 },
         "to": { "type": "string" },
         "scope_selector": { "type": "string" },
+        "fields": { "type": "object", "additionalProperties": { "type": "string" } },
         "schema_ref": { "const": "output_format" },
         "label": { "type": "string" },
         "description": { "type": "string" }

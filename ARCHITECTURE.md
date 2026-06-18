@@ -2,7 +2,7 @@
 
 > Companion to `PROJECT_SPEC.md`. The spec defines *what* the engine does and its external contract; this document defines *how* it is built internally — components, mechanisms, data flows, and deployment topology.
 >
-> **Locked decisions:** Runtime **TypeScript / Node 22**. Run-record + playbook-index store **PostgreSQL everywhere**. Replay extraction is **structural-first with a configurable LLM fallback** that is always surfaced in the envelope.
+> **Locked decisions:** Runtime **TypeScript / Node 24** (latest LTS). Run-record + playbook-index store **PostgreSQL everywhere**. Replay extraction is **structural-first with a configurable LLM fallback** that is always surfaced in the envelope.
 
 ---
 
@@ -30,7 +30,7 @@
                       ║  (1..N containers)    ║
                       ╚═══════╤═══════╤═══════╝
             ┌──────────────┐  │       │  ┌──────────────────┐
-            │  PostgreSQL  │◄─┘       └─►│  Anthropic API    │
+            │  PostgreSQL  │◄─┘       └─►│  LLM provider API │
             │ runs+pb index│             │  (agent + extract)│
             └──────────────┘             └──────────────────┘
             ┌──────────────┐  ┌──────────────┐  ┌────────────┐
@@ -43,7 +43,7 @@
                                                   └──────────┘
 ```
 
-External dependencies: PostgreSQL (always), Anthropic API (agent/heal/LLM-fallback only), object storage (S3 in cloud mode; filesystem in local mode), optional SQS, optional proxy provider.
+External dependencies: PostgreSQL (always), the configured LLM provider's API (agent/heal/LLM-fallback only; none when using a local model like Ollama), object storage (S3 in cloud mode; filesystem in local mode), optional SQS, optional proxy provider.
 
 ## 3. Component Inventory
 
@@ -63,7 +63,7 @@ The engine is a modular monolith — one deployable, clean internal seams so com
 │  PlaybookRunner (no LLM)  │   AgentEngine (Stagehand)         │
 │  StepInterpreter          │   ActionRecorder                  │
 │  StructuralExtractor      │   PlaybookCompiler                │
-│  LlmExtractFallback ──────┼──► (Anthropic)                    │
+│  LlmExtractFallback ──────┼──► (ModelGateway)                 │
 ├──────────────────────────┴──────────────────────────────────┤
 │ BROWSER            BrowserPool · BrowserContextFactory        │
 │                    (Playwright · Chromium · proxy · stealth)  │
@@ -98,10 +98,11 @@ The engine is a modular monolith — one deployable, clean internal seams so com
 - **PlaybookRunner** — deterministic. Loads a version file, validates `data` against `required_data_keys`, drives **StepInterpreter** over the op list, runs **StructuralExtractor** for `extract` ops, optionally invokes **LlmExtractFallback**. No agent, no reasoning loop.
 - **StepInterpreter** — maps each declarative op to Playwright calls; primary selector → `fallback_selectors` → `step_failed`. Evaluates `assertions`.
 - **StructuralExtractor** — pulls fields using stored selectors/scope from the playbook; pure DOM. Per-field success/failure feeds extraction status.
-- **LlmExtractFallback** — engaged only when structural extraction misses fields AND `REPLAY_LLM_FALLBACK=on`. Sends the page (DOM/screenshot) + output_format to the configured fallback model. **Always surfaced** (see §6.3) — the run is never silently "completed" when the LLM had to rescue it.
-- **AgentEngine** — wraps `stagehand.agent()`/`act()`/`observe()`/`extract()`. Enforces guardrails (step budget, domain confinement, CAPTCHA short-circuit, wall clock).
+- **LlmExtractFallback** — engaged only when structural extraction misses fields AND `REPLAY_LLM_FALLBACK=on`. Sends the page (DOM/screenshot) + output_format to the configured fallback model **via the `ModelGateway`**. **Always surfaced** (see §6.3) — the run is never silently "completed" when the LLM had to rescue it.
+- **AgentEngine** — wraps Stagehand **v3.5**, configured with the `model`/key resolved via the `ModelGateway`. The learn flow records via **structured `act()`** — driving the form one field at a time so Stagehand returns the operated selector and each value's data key is known directly (provenance from the call, §4) — then `act` to submit and `extract`+per-field `observe` for the extraction selectors; the autonomous `agent()` is not used for recording (its history surfaces fills as value-less clicks — DECISIONS #24). Stagehand v3 is CDP-native and **owns its own browser** — one instance per agent run, disposed at run end (DECISIONS #21) — so agent runs do **not** use the Playwright `BrowserPool` (that stays the replay path's browser); both are isolated and both are gated by the `Lifecycle` (`executeAgent`: the semaphore + a wall-clock `AbortSignal` that cancels the agent on timeout). Enforces guardrails (step budget, domain confinement via `ssrf-guard`, CAPTCHA short-circuit, wall clock). The only module that imports Stagehand.
 - **ActionRecorder** — observes the agent: records each effective action as `{op, selector, fallback_selectors, description, dataProvenance}` in order. The provenance field is the link from a typed value back to its `data` key (§4).
 - **PlaybookCompiler** — turns the recorded action list into a version file: parameterizes values via provenance, attaches `output_format`, derives `required_data_keys`, writes the version + updates the index/meta.
+- **ModelGateway** (`src/model/`) — resolves the `model` string (`provider/name`) to a provider + its **env-only** secret (key + optional base URL), and enforces **require-explicit**: there is no built-in default, so a run that needs a model with none resolved fails `validation_error`. As built in Phase 4 this is resolution + validation only — Stagehand bundles the Vercel AI SDK and owns the *agent's* model call; the gateway hands it the resolved `model`/key. The direct AI-SDK model client (for `LlmExtractFallback`) lands here in Phase 5. It is the only model entry point for both `AgentEngine` and `LlmExtractFallback`; the deterministic runner/interpreter/structural-extractor never import it (zero-LLM path).
 
 ### 3.5 Browser layer
 
@@ -224,6 +225,7 @@ CREATE TABLE runs (
   self_healed     BOOLEAN NOT NULL DEFAULT false,
   llm_fallback_used BOOLEAN NOT NULL DEFAULT false,
   effective_config JSONB NOT NULL,
+  result          JSONB,                        -- extracted output_format shape (migration 0002)
   error           JSONB,
   extraction_errors JSONB,
   data_keys       TEXT[] NOT NULL DEFAULT '{}', -- keys only; values never stored unless STORE_RUN_INPUTS
@@ -257,7 +259,7 @@ HttpServer → Orchestrator (async job)
 Orchestrator:          no playbook_id, instruction present → AGENT MODE
 Orchestrator → BrowserPool:   acquire context (proxy? channel? per config)
 Orchestrator → AgentEngine:   run(instruction, url, data, output_format)
-  AgentEngine → Anthropic:    reasoning per step  (ActionRecorder logging w/ provenance)
+  AgentEngine → ModelGateway → provider:  reasoning per step  (ActionRecorder logging w/ provenance)
   AgentEngine → Playwright:   navigate/fill/submit
   AgentEngine → extract():    output_format → Zod → result
 Orchestrator → EvidenceStore: screenshot + html
@@ -296,6 +298,7 @@ The fallback exists so a minor layout shift doesn't force a full heal, but it mu
 - If the LLM fallback itself can't resolve a field → that field is an extraction error as normal.
 - A run that needed the fallback is `completed` (data is correct) but is **counted in metrics** (`fallback_engaged_total`, per-playbook) so a playbook quietly drifting toward obsolescence is visible. Optional: `FALLBACK_AS_DRIFT_SIGNAL=on` flags the playbook for proactive re-learn after K fallback engagements.
 - Config keys: `REPLAY_LLM_FALLBACK` (on|off, env; payload-overridable as `config.replay_llm_fallback`), `REPLAY_LLM_FALLBACK_MODEL` (env; payload-overridable as `config.replay_llm_fallback_model`).
+- **As built (Phase 5):** the fallback runs via the `ModelGateway` (`generateObject`, Anthropic wired) and is **fallback-first-then-heal** — a miss still present after the fallback escalates to self-heal (§6.4) only if `self_heal_on_extraction_failure` (DECISIONS #26). `fallback_engaged_total` is a **persistent per-playbook DB count** (`playbooks.fallback_engaged_count`); `FALLBACK_AS_DRIFT_SIGNAL=on` flags `health='needs_relearn'` after `FALLBACK_DRIFT_THRESHOLD` engagements. Prometheus export is deferred to the observability work.
 
 ### 6.4 Self-heal
 
@@ -407,14 +410,14 @@ CLOUD / SCALED (ECS Fargate)
 
 ### 8.5 Failure isolation
 
-A crashing run kills only its own context; the pool replaces it, and other in-flight runs are unaffected (§8.1). A wedged Chromium is caught by the per-run `RUN_TIMEOUT_SECONDS` wall clock → context torn down → slot freed → `timeout` error returned. Process recycling (`BROWSER_RECYCLE_RUNS`) caps cumulative memory leaks across runs that share a Chromium process.
+A crashing run kills only its own context; the pool replaces it, and other in-flight runs are unaffected (§8.1). A wedged Chromium is caught by the per-run `RUN_TIMEOUT_SECONDS` wall clock → context torn down → slot freed → `timeout` error returned. Process recycling (`BROWSER_RECYCLE_RUNS`) caps cumulative memory leaks across runs that share a Chromium process; the pool recycles a process only once its in-flight contexts have drained, and exposes a monotonic `generation` counter as the recycle-observable proxy (Playwright does not surface the OS PID — DECISIONS #19). The pool keys browsers by `headless` mode, so headed and headless runs never share a process.
 
 ## 9. Security Architecture
 
 - **Auth (pluggable, `API_AUTH_MODE`):** `none` (private network), `api_key` (per-caller keys, hashed at rest, used as the idempotency `caller` scope), `hmac` (KSig1-style request signing — recommended for parity with Kompliant). SQS path trust = queue IAM.
 - **Webhook integrity:** HMAC-SHA256 over raw body, `X-Engine-Signature`, per-caller secret; callers verify before trusting.
 - **SSRF:** deny RFC1918 / 169.254.0.0/16 / loopback / link-local for `url` and all agent navigation; `ALLOWED_PRIVATE_CIDRS` opt-in for deliberate internal targets.
-- **Secrets & data:** `ANTHROPIC_API_KEY`, proxy creds, webhook secrets, DB creds are env/secret-manager only, never in payloads. `data` values are redacted in logs and **never** persisted into playbook bodies (provenance templating guarantees only `{{data.*}}` refs are stored). Run rows store data *keys*, not values, unless `STORE_RUN_INPUTS=true` (off by default).
+- **Secrets & data:** model-provider keys/endpoints (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `OLLAMA_BASE_URL`), proxy creds, webhook secrets, DB creds are env/secret-manager only, never in payloads. `data` values are redacted in logs and **never** persisted into playbook bodies (provenance templating guarantees only `{{data.*}}` refs are stored). Run rows store data *keys*, not values, unless `STORE_RUN_INPUTS=true` (off by default).
 - **No code execution from learned artifacts:** the runner interprets a fixed op vocabulary; a playbook can never introduce executable code.
 - **Tenancy note:** v1 is single-trust-domain. `caller` scoping on keys/idempotency is the seam along which per-tenant isolation (separate playbook namespaces, quotas) would later be added.
 
@@ -428,8 +431,8 @@ effectiveConfig(key) =
 ```
 
 - One pure `ConfigResolver` consumed everywhere; result frozen onto the run and emitted in `meta.effective_config`.
-- **Overridable** (behavior): self-heal flags, `run_timeout_seconds` (a caller may shorten its own run; a hard ceiling `MAX_RUN_TIMEOUT_SECONDS` caps it), agent_max_steps, model, evidence_capture/inline, proxy_enabled, headless, allow_offsite, replay_llm_fallback(+model), force_relearn.
-- **Env-only** (destinations, secrets, capacity): storage backends/paths/buckets, SQS, DB, Anthropic key, auth/webhook secrets, proxy URL/creds, service mode, and the **capacity limits** `MAX_CONCURRENT_RUNS` / `MAX_QUEUE_DEPTH` / `BROWSER_RECYCLE_RUNS` (§8.2 — a payload must never raise the container's own resource ceilings). *Payload config can never redirect where data is stored or sent, nor raise capacity limits.*
+- **Overridable** (behavior): self-heal flags, `run_timeout_seconds` (a caller may shorten its own run; a hard ceiling `MAX_RUN_TIMEOUT_SECONDS` caps it), agent_max_steps, model (`provider/name`; **required**, no built-in default), evidence_capture/inline, proxy_enabled, headless, allow_offsite, replay_llm_fallback(+model), force_relearn.
+- **Env-only** (destinations, secrets, capacity): storage backends/paths/buckets, SQS, DB, model-provider keys/endpoints, auth/webhook secrets, proxy URL/creds, service mode, and the **capacity limits** `MAX_CONCURRENT_RUNS` / `MAX_QUEUE_DEPTH` / `BROWSER_RECYCLE_RUNS` (§8.2 — a payload must never raise the container's own resource ceilings). *Payload config can never redirect where data is stored or sent, nor raise capacity limits.*
 
 Concurrency & capacity env (see §8.2):
 
@@ -457,7 +460,8 @@ src/
   orchestrator/   run-orchestrator.ts  resolution.ts  heal.ts  lifecycle.ts
   execution/
     playbook/     runner.ts  step-interpreter.ts  structural-extractor.ts  llm-fallback.ts
-    agent/        agent-engine.ts  action-recorder.ts  provenance.ts  compiler.ts
+    agent/        agent-engine.ts  action-recorder.ts  provenance.ts  compiler.ts  recorded-action.ts
+  model/          model-gateway.ts          # resolves model "provider/name" → provider+env key (DECISIONS #11)
   browser/        pool.ts  context-factory.ts  ssrf-guard.ts
   persistence/
     runs/         run-store.pg.ts

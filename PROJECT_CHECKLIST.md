@@ -26,14 +26,14 @@ The order is deliberate and should not be reshuffled:
 Lock the inputs so no later phase stalls on an unanswered question.
 
 ### Tasks
-- [ ] Confirm locked decisions from spec §17: TypeScript/Node 22, Postgres everywhere, structural-first extraction with surfaced LLM fallback, three-limit concurrency model.
-- [ ] Decide **API auth mode** for v1 (`none` | `api_key` | `hmac`). Default assumption: `none` for first internal deploy, `hmac` reserved. Record the choice.
-- [ ] Decide **sync mode** (`?wait=true`) in or out for v1. Default: out (async-only).
-- [ ] Pick the **project name** (replaces "engine" placeholder) — affects package name, ID prefixes, image name.
-- [ ] Provision an **Anthropic API key** and confirm Stagehand can reach it from a local container.
+- [x] Confirm locked decisions from spec §17: TypeScript/Node 22, Postgres everywhere, structural-first extraction with surfaced LLM fallback, three-limit concurrency model.
+- [x] Decide **API auth mode** for v1 (`none` | `api_key` | `hmac`). Default assumption: `none` for first internal deploy, `hmac` reserved. Record the choice. → **`none`** (DECISIONS.md #7).
+- [x] Decide **sync mode** (`?wait=true`) in or out for v1. Default: out (async-only). → **out** (DECISIONS.md #8).
+- [x] Pick the **project name** (replaces "engine" placeholder) — affects package name, ID prefixes, image name. → **Rote** (DECISIONS.md #6).
+- [ ] Provision a **model-provider key/endpoint** (Anthropic/OpenAI/Google, or a local Ollama endpoint) and confirm Stagehand can reach it from a local container.
 - [ ] Confirm **target test sites**: pick 2–3 real public sites with lookup forms for end-to-end validation (no auth, no CAPTCHA) + the bundled fixture site.
 - [ ] Repository created; license; CODEOWNERS; branch protection.
-- [ ] Decide ID scheme: `run_...`, `pb_...` (ULID/KSUID for sortability). Record prefix constants.
+- [x] Decide ID scheme: `run_...`, `pb_...` (ULID/KSUID for sortability). Record prefix constants. → **ULID**, prefixes `run_`/`pb_` (DECISIONS.md #9).
 
 ### Acceptance criteria
 - All four spec §17 "resolved" items are reflected in a short `DECISIONS.md` in the repo.
@@ -41,44 +41,46 @@ Lock the inputs so no later phase stalls on an unanswered question.
 
 ### ▣ Plan & Verify gate — Phase 0
 - **Plan check:** Is every input Phase 1 needs now decided or defaulted? (runtime, DB, auth, name, IDs, API key, test sites)
-- **Verify:** `DECISIONS.md` exists and is reviewed. Anthropic key works from a throwaway container (`curl` the API or a 3-line Stagehand smoke). No open question blocks scaffolding.
+- **Verify:** `DECISIONS.md` exists and is reviewed. A model-provider key/endpoint works from a throwaway container (`curl` the provider API or a 3-line Stagehand smoke). No open question blocks scaffolding.
 - **Exit condition:** a second person could start Phase 1 from the repo with no verbal context.
 
 ---
 
 ## Phase 1 — Skeleton (API, config, Postgres, envelope, Docker)
 
+> **Status: ✅ COMPLETE** — Plan & Verify gate passed by cold-start observation (2026-06-16), committed on branch `phase-1`. Granular tracker + Notes: [.ai-workspace/phase1_checklist.md](.ai-workspace/phase1_checklist.md). **Next: Phase 2 (on explicit go-ahead).**
+
 A running service that accepts a run, persists it, and returns an envelope — with **no browser yet**. This proves the contract and the plumbing.
 
 ### Tasks
 
 **Project setup**
-- [ ] TS + Node 22 project; strict tsconfig; ESLint/Prettier; vitest or jest.
-- [ ] Fastify server; `PORT`; structured JSON logger (pino) with `run_id` scoping.
-- [ ] Dockerfile `FROM mcr.microsoft.com/playwright:<pinned>` (browser deps present even though unused this phase); `tini` as PID 1.
-- [ ] `docker-compose.yml`: engine + Postgres; `DATABASE_URL` wired; `-v ./data:/data`.
+- [x] TS + Node 24 (latest LTS) project; strict tsconfig; ESLint/Prettier; vitest or jest.
+- [x] Fastify server; `PORT`; structured JSON logger (pino) with `run_id` scoping.
+- [x] Dockerfile `FROM mcr.microsoft.com/playwright:<pinned>` (browser deps present even though unused this phase); `tini` as PID 1.
+- [x] `docker-compose.yml`: engine + Postgres; `DATABASE_URL` wired; `-v ./data:/data`.
 
 **Config**
-- [ ] `ConfigResolver`: pure per-key merge **payload.config > env > builtin default** (spec §10).
-- [ ] Implement the full env surface from spec §10 (storage, SQS placeholders, concurrency limits as values even if not yet enforced, fallback flags).
-- [ ] `effective_config` frozen onto each run and echoed in `meta`.
-- [ ] Enforce env-only keys: payload attempting to set a capacity/destination key is ignored (and logged at debug).
+- [x] `ConfigResolver`: pure per-key merge **payload.config > env > builtin default** (spec §10).
+- [x] Implement the full env surface from spec §10 (storage, SQS placeholders, concurrency limits as values even if not yet enforced, fallback flags).
+- [x] `effective_config` frozen onto each run and echoed in `meta`.
+- [x] Enforce env-only keys: payload attempting to set a capacity/destination key is ignored (and logged at debug).
 
 **Payload & envelope**
-- [ ] Zod schema for the full payload (spec §5): `instruction`, `url`, `output_format`, `playbook_id`, `playbook_version`, `data`, `config`, `callback_url`, `idempotency_key`.
-- [ ] Resolution precondition validation: reject when neither `playbook_id` nor (`instruction`+`url`) present → `validation_error`.
-- [ ] Envelope builder (`{ meta, result }`, spec §6) with all `meta` fields; `result` is caller-shape-or-null.
-- [ ] Status vocabulary + error model types (spec §7).
+- [x] Zod schema for the full payload (spec §5): `instruction`, `url`, `output_format`, `playbook_id`, `playbook_version`, `data`, `config`, `callback_url`, `idempotency_key`.
+- [x] Resolution precondition validation: reject when neither `playbook_id` nor (`instruction`+`url`) present → `validation_error`.
+- [x] Envelope builder (`{ meta, result }`, spec §6) with all `meta` fields; `result` is caller-shape-or-null.
+- [x] Status vocabulary + error model types (spec §7).
 
 **Persistence (Postgres)**
-- [ ] Migrations for `playbooks`, `playbook_versions`, `runs`, `idempotency_keys` (architecture §5.1).
-- [ ] `RunStore`: create/update run rows; status transitions.
-- [ ] `IdempotencyGuard`: `(caller, idempotency_key)` unique; repeat returns existing run's envelope.
+- [x] Migrations for `playbooks`, `playbook_versions`, `runs`, `idempotency_keys` (architecture §5.1).
+- [x] `RunStore`: create/update run rows; status transitions.
+- [x] `IdempotencyGuard`: `(caller, idempotency_key)` unique; repeat returns existing run's envelope.
 
 **Endpoints**
-- [ ] `POST /v1/runs` → validate, persist `queued`, return `202 {meta:{run_id,status}}`. (Execution stubbed: immediately marks `failed` with `not_implemented` OR echoes a canned envelope — pick one and note it.)
-- [ ] `GET /v1/runs/{run_id}` → current envelope from `RunStore`.
-- [ ] `GET /v1/health` → liveness + DB reachability (saturation fields return zeros this phase).
+- [x] `POST /v1/runs` → validate, persist `queued`, return `202 {meta:{run_id,status}}`. (Execution stubbed: marks `failed` with `internal_error` — DECISIONS #12.)
+- [x] `GET /v1/runs/{run_id}` → current envelope from `RunStore`.
+- [x] `GET /v1/health` → liveness + DB reachability (saturation fields return zeros this phase).
 
 ### Acceptance criteria
 - `docker-compose up` brings engine + Postgres healthy.
@@ -98,38 +100,40 @@ A running service that accepts a run, persists it, and returns an envelope — w
 
 ## Phase 2 — Playbook Runner (deterministic, no LLM)
 
+> **Status: ✅ COMPLETE** — Plan & Verify gate passed by observation (2026-06-17): 21 tests green, dockerized cold-start replay, live real-site extraction. Granular tracker + Notes: [.ai-workspace/phase2_checklist.md](.ai-workspace/phase2_checklist.md). **Next: Phase 3 (on explicit go-ahead).**
+
 The cheap path. Execute a **declarative playbook** against a site with plain Playwright. Playbooks are hand-authored fixtures this phase (the agent that writes them comes in Phase 4) — this isolates the interpreter from the compiler.
 
 ### Tasks
 
 **Fixture site**
-- [ ] Bundled express fixture website in `test/fixtures/site`: a lookup form (text inputs + submit) → results page with extractable fields; an "action only" form (submit, no results); a deliberately mutated variant (selector renamed) for later heal tests.
-- [ ] Compose profile or script to serve the fixture for integration tests (offline).
+- [x] Bundled express fixture website in `test/fixtures/site`: a lookup form (text inputs + submit) → results page with extractable fields; an "action only" form (submit, no results); a deliberately mutated variant (selector renamed) for later heal tests.
+- [x] Compose profile or script to serve the fixture for integration tests (offline).
 
 **Step interpreter**
-- [ ] Declarative version-file schema (architecture §8.2): `steps[]`, `assertions[]`, `output_format`, `required_data_keys`, `engine_min_version`.
-- [ ] Implement op vocabulary: `goto`, `click`, `fill`, `select`, `check`, `press`, `wait_for`, `wait_ms`, `scroll`, `extract`, `screenshot`.
-- [ ] Per step: primary selector → `fallback_selectors` → `step_failed` with step index + message.
-- [ ] `{{data.*}}` template binding against **this run's** data only.
-- [ ] `assertions` evaluation (e.g., `url_matches` after a step).
+- [x] Declarative version-file schema (architecture §8.2): `steps[]`, `assertions[]`, `output_format`, `required_data_keys`, `engine_min_version`.
+- [x] Implement op vocabulary: `goto`, `click`, `fill`, `select`, `check`, `press`, `wait_for`, `wait_ms`, `scroll`, `extract`, `screenshot`.
+- [x] Per step: primary selector → `fallback_selectors` → `step_failed` with step index + message.
+- [x] `{{data.*}}` template binding against **this run's** data only.
+- [x] `assertions` evaluation (e.g., `url_matches` after a step).
 
 **Structural extraction**
-- [ ] `StructuralExtractor`: pull `output_format` fields from DOM using stored scope/field selectors; per-field success/failure.
-- [ ] Missing fields → `extraction_errors` + status `completed_with_extraction_errors` (no guessing). (LLM fallback is Phase 5.)
+- [x] `StructuralExtractor`: pull `output_format` fields from DOM using the extract op's `fields` map (DECISIONS #14); per-field success/failure.
+- [x] Missing fields → `extraction_errors` + status `completed_with_extraction_errors` (no guessing). (LLM fallback is Phase 5.)
 
 **Playbook store (local) + versioning**
-- [ ] `PlaybookStore` local FS impl: `playbooks/{id}/meta.json` + `vN.json` (architecture §8.1).
-- [ ] Postgres `playbooks` + `playbook_versions` index rows kept in sync with bodies; `body_uri` pointer.
-- [ ] `GET /v1/playbooks`, `GET /v1/playbooks/{id}` (contract: required keys, format, versions, active_version), `GET /v1/playbooks/{id}/versions/{v}`.
-- [ ] `POST /v1/playbooks/{id}/activate` (pointer move / rollback) as a single Postgres transaction.
-- [ ] `DELETE /v1/playbooks/{id}` soft-delete (tombstone; versions retained).
-- [ ] Pinned replay: `playbook_version` in payload runs that exact version, never moves pointer.
+- [x] `PlaybookStore` local FS impl: `playbooks/{id}/meta.json` + `vN.json` (architecture §8.1).
+- [x] Postgres `playbooks` + `playbook_versions` index rows kept in sync with bodies; `body_uri` pointer.
+- [x] `GET /v1/playbooks`, `GET /v1/playbooks/{id}` (contract: required keys, format, versions, active_version), `GET /v1/playbooks/{id}/versions/{v}`.
+- [x] `POST /v1/playbooks/{id}/activate` (pointer move / rollback) as a single Postgres transaction.
+- [x] `DELETE /v1/playbooks/{id}` soft-delete (tombstone; versions retained).
+- [x] Pinned replay: `playbook_version` in payload runs that exact version, never moves pointer.
 
 **Replay wiring**
-- [ ] `POST /v1/runs` with `playbook_id` → load active (or pinned) version → validate data vs `required_data_keys` (fail-fast `422` if missing) → run interpreter → extract → evidence → envelope.
+- [x] `POST /v1/runs` with `playbook_id` → load active (or pinned) version → validate data vs `required_data_keys` (fail-fast `422` if missing) → run interpreter → extract → evidence → envelope.
 
 **Evidence (local)**
-- [ ] `EvidenceStore` local impl: screenshot + serialized HTML under `evidence/{run_id}/`; envelope carries engine-served paths; `GET /v1/runs/{id}/evidence`.
+- [x] `EvidenceStore` local impl: screenshot + serialized HTML under `evidence/{run_id}/`; envelope carries engine-served paths; `GET /v1/runs/{id}/evidence`.
 
 ### Acceptance criteria
 - A hand-authored extraction playbook run against the fixture returns a correct `result` matching `output_format`, status `completed`.
@@ -149,6 +153,8 @@ The cheap path. Execute a **declarative playbook** against a site with plain Pla
 ---
 
 ## Phase 3 — Concurrency Core & Request Isolation
+
+> **Status: ✅ COMPLETE** — Plan & Verify gate passed by observation (2026-06-17): 27 tests green (incl. the release-blocking isolation test @ 600 concurrent runs), dockerized cold-start load gate (2×60 real-HTTP runs, zero cross-contamination, saturation→0, stable memory). Granular tracker + Notes: [.ai-workspace/phase3_checklist.md](.ai-workspace/phase3_checklist.md). **Next: Phase 4 (on explicit go-ahead).**
 
 Make the engine safe under simultaneous load **before** the agent exists, so isolation is proven on the fully-controllable deterministic path. This is the phase that protects production.
 
@@ -193,12 +199,14 @@ Make the engine safe under simultaneous load **before** the agent exists, so iso
 
 ## Phase 4 — Agent Engine (Stagehand) & Playbook Compilation
 
+> **Status: ✅ COMPLETE — live-verified** — Plan & Verify gate passed by observation (2026-06-17). Offline (64 tests, 1 live skipped in CI): deterministic compile→replay round-trip with different data, provenance-vs-page-text, action-only, require-explicit-model 422, SSRF/recorder/compiler/gateway units; dockerized cold-start (boot with agent deps, replay + 422 over HTTP). **Live, the full learn→replay round-trip is GREEN both on the host (`npm run test:live`) AND inside the dockerized engine (`scripts/docker-agent-check.ts`)** — the agent learns the fixture form, compiles a parameterized playbook, and it replays with *different* data and no LLM (cost: learn ≈ 12k tokens, replay = 0). Learn flow uses structured `act()` orchestration (DECISIONS #24); the container needs `CHROME_PATH` + the provider key (wired in compose). Granular tracker + Notes: [.ai-workspace/phase4_checklist.md](.ai-workspace/phase4_checklist.md). **Carried forward:** real-site demo, format-change-reuse optimization (DECISIONS #23). **Next: Phase 5 (on explicit go-ahead).**
+
 Now the expensive path: learn a task from an instruction and **compile it into a playbook** the Phase-2 runner can replay. Isolation (Phase 3) already holds, so the agent inherits it.
 
 ### Tasks
 
 **Stagehand integration**
-- [ ] `AgentEngine` wrapping `stagehand.agent()`/`act()`/`observe()`/`extract()` in `LOCAL` mode with the configured model + Anthropic key.
+- [ ] `AgentEngine` wrapping `stagehand.agent()`/`act()`/`observe()`/`extract()` in `LOCAL` mode, with the configured `model` (`provider/name`) resolved via the `ModelGateway` (Anthropic/OpenAI/Google/local).
 - [ ] Browser launched through the Phase-3 pool/context factory (channel, proxy flag, headless per config) — agent runs are just another isolated run.
 - [ ] Guardrails: `agent_max_steps` budget, wall-clock timeout (reuses Phase-3 timeout), domain confinement (no off-site nav unless `allow_offsite`), `captcha_detected` short-circuit.
 - [ ] `SelectorCache` (local impl): persist Stagehand `observe()` results so repeat agent operations skip inference; S3 backend deferred to Phase 6.
@@ -238,6 +246,8 @@ Now the expensive path: learn a task from an instruction and **compile it into a
 
 ## Phase 5 — Self-Heal & Surfaced LLM Extraction Fallback
 
+> **Status: ✅ COMPLETE — live-verified** — Plan & Verify gate passed by observation (2026-06-17). Offline (74 tests, 3 live-skipped): exhaustive §7 heal-classification table, heal success/config-off/extraction-miss/unhealthy-flag/pinned-heal (fake agent), fallback on/off (fake fallback). **LIVE (`npm run test:live`, real Anthropic):** mutate→heal→v2-replay GREEN (v1 broken on the /v2 site → agent learns v2 → v2 replays) + surfaced Haiku fallback GREEN. **In-container (`scripts/docker-heal-check.ts`):** self-heal + fallback PASS. Cost: heal ≈ 10k tokens, fallback ≈ one small Haiku call, replay = 0. Extraction-miss precedence = fallback-first-then-heal (DECISIONS #26); reservation released once-per-run (#28). Granular tracker + Notes: [.ai-workspace/phase5_checklist.md](.ai-workspace/phase5_checklist.md). **Next: Phase 6 (on explicit go-ahead).**
+
 Two resilience mechanisms that both lean on Phases 2+4. Self-heal = runner failure → agent → new version. LLM fallback = structural extraction miss → one-shot model extract, always surfaced.
 
 ### Tasks
@@ -274,6 +284,8 @@ Two resilience mechanisms that both lean on Phases 2+4. Self-heal = runner failu
 ---
 
 ## Phase 6 — Transports & Storage Backends (webhooks, SQS, S3, modes)
+
+> **Status: ✅ COMPLETE — cloud-e2e-verified** — Plan & Verify gate passed by observation (2026-06-17). Offline (83 tests, 3 live-skipped): webhook deliver/retry→failed, SQS api→worker e2e + redelivery-idempotency + DLQ (LocalStack), S3 adapter round-trips, backend-swap (full replay on S3 + evidence 302→presigned). **Dockerized cloud topology (`docker-compose.cloud.yml`, LocalStack): `api → SQS → worker → S3` end-to-end PASS** (`scripts/docker-cloud-check.ts`). One orchestrator + one `prepare()` serve HTTP and SQS — payload→envelope byte-identical. Webhook unsigned (#30), evidence 302→presigned (#31), LocalStack for AWS emulation (#29). **Carried forward:** webhook HMAC signing (Phase 7 + auth), `evidence_inline` base64. Granular tracker + Notes: [.ai-workspace/phase6_checklist.md](.ai-workspace/phase6_checklist.md). **Next: Phase 7 (on explicit go-ahead).**
 
 Swap the local edges for production ones, and split the process roles. The core is unchanged — these are interchangeable adapters around it.
 
@@ -317,6 +329,8 @@ Swap the local edges for production ones, and split the process roles. The core 
 ---
 
 ## Phase 7 — Hardening, Security, Observability, Docs
+
+> **Status: ✅ COMPLETE — v1 done** (pending the user's independent security sign-off + docs dogfood). Plan & Verify gate passed by observation (2026-06-17). **Security:** SSRF deny rules on the initial url, replay `goto`, AND agent nav (`ALLOWED_PRIVATE_CIDRS` allowlist); an automated **no-leak scan** (sentinel value absent from logs / run row / playbook body); no-`eval` assertion; auth descoped to the gateway (DECISIONS #32). **Observability:** Prometheus `/metrics` (full §11 set + process metrics). **Chaos:** evidence-down → run completes; Postgres-down → health 503; redelivery + backpressure (Phase 6/3). **Docs:** README + caller + operator guides + `SECURITY_REVIEW.md`. Offline 97 passed / 3 live-skipped; dockerized cold-start: `/metrics` + cloud api→SQS→worker→S3 e2e green. Granular tracker + Notes: [.ai-workspace/phase7_checklist.md](.ai-workspace/phase7_checklist.md). **Carried forward (user):** independent security sign-off + docs dogfood (DECISIONS #33). **🎉 Phases 0–7 all landed.**
 
 Named phase, own gate — not a backlog. Close the security and operability gaps before real traffic.
 

@@ -10,8 +10,8 @@ Swap the local edges for production ones and split the process roles. The core b
 
 - **One orchestrator, two transports.** The SQS consumer and the HTTP handler share the exact same payload schema and orchestrator. The gate's plan-check requires the payload→envelope contract to be **byte-identical** across both — any divergence means two code paths to maintain.
 - **At-least-once + idempotent effects**, not exactly-once. SQS redelivery on worker crash is safe because run creation is idempotency-keyed and evidence/version writes are idempotent on `run_id`/`(playbook_id, version)`.
-- **Storage behind interfaces.** `PlaybookStore`/`EvidenceStore`/`SelectorCache` get S3 impls with the same layout/prefix as local; switching `STORAGE_BACKEND` local↔s3 needs **no** code change above persistence (EXECUTION_STANDARDS §3 layering).
-- **Webhook signing reuses the HMAC pattern** (`X-Engine-Signature`, per-caller secret) — parity with the Kompliant KSig scheme.
+- **Storage behind interfaces.** `PlaybookStore`/`EvidenceStore`/`SelectorCache` get S3 impls with the same layout/prefix as local; switching `STORAGE_BACKEND` local↔s3 needs **no** code change above persistence (EXECUTION_STANDARDS §3 layering). **AWS SDK v3 honors a custom endpoint → LocalStack in dev, real AWS in prod** (DECISIONS #29). Evidence URLs stay the stable engine path `/v1/runs/:id/evidence/:file` in all backends; S3 mode 302-redirects to a freshly-presigned URL (DECISIONS #31).
+- **Webhooks are delivered UNSIGNED this phase** (POST + retry + `webhook_status`); HMAC `X-Engine-Signature` signing is **deferred to Phase 7 with auth** (no caller identity in v1 to key a per-caller secret — DECISIONS #30).
 
 ## File-by-file (indicative)
 
