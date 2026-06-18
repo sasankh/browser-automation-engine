@@ -10,8 +10,8 @@
 | `data` values | Leak of PII into logs/playbooks/DB | Redacted in logs/traces; **never** persisted into playbook bodies (only `{{data.*}}` refs); run rows store keys not values unless `STORE_RUN_INPUTS=true`. |
 | Playbook bodies | Code execution via learned artifact | Playbooks are data: a fixed op vocabulary is interpreted; nothing from a body is ever `eval`'d / `Function()`'d. Bodies are JSON-Schema-validated on load. |
 | Concurrent runs | Cross-request data bleed | One `BrowserContext` per run; no shared mutable run state; keyed evidence/version paths (`ARCHITECTURE.md` §8.1). Tested by the Phase 3 isolation test. |
-| Webhooks | Forged/tampered result delivery | HMAC-SHA256 over the raw body (`X-Engine-Signature`); callers verify constant-time. |
-| API access | Unauthorized runs | `API_AUTH_MODE` = `none` (internal trust) \| `api_key` \| `hmac`; the `caller` scope drives idempotency + (future) tenancy. |
+| Webhooks | Forged/tampered result delivery | **v1: unsigned** — verification is the trusted gateway's job (`API_AUTH_MODE=none`, DECISIONS #32). An `X-Engine-Signature` HMAC is reserved for when in-engine caller auth is added. |
+| API access | Unauthorized runs | v1 ships `API_AUTH_MODE=none` (trusted-gateway posture) — the only enforced mode; `api_key`/`hmac` are reserved (accepted but **not enforced** in-engine, DECISIONS #32). The `caller` scope drives idempotency + (future) tenancy. |
 | Secrets | Exposure | Model-provider keys/endpoints (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `OLLAMA_BASE_URL`), proxy creds, webhook + auth secrets, `DATABASE_URL` are env/secret-manager only — never in payloads, never overridable by `config`. A payload may select the provider/model but never supply a key or redirect an endpoint. |
 | Payload config | Privilege/resource escalation | `config` can change behavior but never destinations or capacity ceilings (`MAX_CONCURRENT_RUNS` etc. are env-only). |
 
@@ -35,6 +35,6 @@ Walk the table in §1 as an attacker:
 - SSRF — private-IP `url` and an agent attempting off-site/internal navigation are both blocked.
 - Exfiltration — the no-leak scan is green.
 - Code execution — confirm nothing from a playbook is evaluated.
-- Auth — the chosen mode is enforced on every mutating route.
+- Auth — descoped to the gateway (DECISIONS #32); confirm the trusted-gateway/private-network deployment assumption holds (the engine itself enforces only `none`).
 
 Given the compliance-adjacency, the gate requires an **independent review sign-off** (a second set of eyes), not self-attestation.

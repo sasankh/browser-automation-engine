@@ -92,7 +92,7 @@ Every result — poll response, webhook body, results-queue message — is the s
 }
 ```
 
-Webhooks are HMAC-signed and retried (3×, backoff) on non-2xx. New `meta` fields may be added over time (additive, non-breaking); never assume `meta` is closed.
+Webhooks are delivered to `callback_url` and retried (`WEBHOOK_MAX_RETRIES`, default 3, backoff) on non-2xx; the outcome is recorded in `meta.webhook_status`. **They are unsigned in v1** — the engine runs behind a trusted gateway (see §7). New `meta` fields may be added over time (additive, non-breaking); never assume `meta` is closed.
 
 ## 4. Statuses & errors
 
@@ -158,15 +158,12 @@ Webhooks fire only on **terminal** states.
 
 Resolution per key: **payload `config` > env > built-in default** (`PROJECT_SPEC.md` §10). Overridable (behavior) keys include: `playbook_self_heal`, `self_heal_on_extraction_failure`, `run_timeout_seconds` (capped by `MAX_RUN_TIMEOUT_SECONDS`), `agent_max_steps`, `model` (`provider/name`, **required** — no built-in default), `evidence_capture`, `evidence_inline`, `proxy_enabled`, `headless`, `allow_offsite`, `replay_llm_fallback` (+ model), `force_relearn`.
 
-**Not overridable** (env-only — destinations, secrets, capacity): storage backends/buckets, SQS, `DATABASE_URL`, model-provider keys/endpoints (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `OLLAMA_BASE_URL`), auth/webhook secrets, proxy creds, `SERVICE_MODE`, `MAX_CONCURRENT_RUNS`, `MAX_QUEUE_DEPTH`, `BROWSER_RECYCLE_RUNS`, `MAX_RUN_TIMEOUT_SECONDS`. A payload can never change where data is stored/sent or raise resource ceilings.
+**Not overridable** (env-only — destinations, secrets, capacity): storage backends/buckets, SQS, `DATABASE_URL`, model-provider keys/endpoints (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `OLLAMA_BASE_URL`), auth/webhook secrets (reserved — §7), proxy creds, `SERVICE_MODE`, `MAX_CONCURRENT_RUNS`, `MAX_QUEUE_DEPTH`, `BROWSER_RECYCLE_RUNS`, `MAX_RUN_TIMEOUT_SECONDS`. A payload can never change where data is stored/sent or raise resource ceilings.
 
-## 7. Webhook verification
+## 7. Webhook delivery & trust
 
-The engine signs the raw response body with HMAC-SHA256 using the caller's shared secret and sends it as `X-Engine-Signature: sha256=<hex>`. Verify before trusting:
+Webhooks are **unsigned in v1**. The engine is designed to run **behind a trusted gateway** on a private network, so caller authentication and webhook verification are the gateway's responsibility, not the engine's (`API_AUTH_MODE=none`; DECISIONS #32). Treat a webhook as authentic because it arrived over your trusted path — verify the source via your network/gateway, not a signature.
 
-```
-expected = HMAC_SHA256(secret, raw_request_body)
-constant_time_equals(expected, header_value_after "sha256=")
-```
+Delivery semantics: the terminal envelope is POSTed to `callback_url` and retried (`WEBHOOK_MAX_RETRIES`, default 3, with backoff) on any non-2xx; the final outcome is recorded in `meta.webhook_status` (`delivered` | `failed`). Webhooks fire only on terminal states.
 
-Use the **raw bytes** of the body, not a re-serialized JSON (key order matters). Reject on mismatch.
+An `X-Engine-Signature` HMAC (per-caller secret over the raw body) is **reserved** for whenever in-engine caller auth is added (DECISIONS #30/#32); it is not emitted today.

@@ -195,7 +195,7 @@ Envelope invariants:
 
 - `result` is **only ever** the caller-defined shape, or `null`. The engine never injects fields into it.
 - All system information lives in `meta`. New meta fields may be added over time (additive, non-breaking).
-- Webhooks are delivered to `callback_url` and retried with backoff (`WEBHOOK_MAX_RETRIES`, default 3) on non-2xx; the outcome is recorded in `meta.webhook_status`. **As built (Phase 6) they are unsigned** — HMAC `X-Engine-Signature` (per-caller secret over the raw body) is deferred to Phase 7 with caller auth (DECISIONS #30).
+- Webhooks are delivered to `callback_url` and retried with backoff (`WEBHOOK_MAX_RETRIES`, default 3) on non-2xx; the outcome is recorded in `meta.webhook_status`. **They are unsigned** — the engine runs behind a trusted gateway that owns caller auth and webhook verification, so an HMAC `X-Engine-Signature` is reserved, not emitted (DECISIONS #30/#32).
 
 ## 7. Statuses & Error Model
 
@@ -416,8 +416,8 @@ GOOGLE_GENERATIVE_AI_API_KEY=
 OLLAMA_BASE_URL=                   # e.g. http://localhost:11434/v1 (OpenAI-compatible; local, no external call)
 OPENAI_BASE_URL=                   # optional: OpenAI-compatible gateway (vLLM/LM Studio/OpenRouter/Azure)
 
-WEBHOOK_SIGNING_SECRET=
-API_AUTH_MODE=none | api_key | hmac
+WEBHOOK_SIGNING_SECRET=             # reserved — webhooks are unsigned in v1 (verification at the gateway, DECISIONS #32)
+API_AUTH_MODE=none | api_key | hmac # only `none` is enforced in v1; api_key/hmac reserved (DECISIONS #32)
 PROXY_URL=
 DATABASE_URL=postgres://...        # run records + playbook index (Postgres everywhere)
 
@@ -455,7 +455,7 @@ REPLAY_LLM_FALLBACK_MODEL=        # provider/name model used only when fallback 
 - **SSRF**: `url` and agent navigation are confined to public internet by default; deny RFC1918 / link-local / metadata endpoints (169.254.169.254) at the network layer of the container and via URL validation. Config allowlist for intentionally internal targets (`ALLOWED_PRIVATE_CIDRS`).
 - **Data sensitivity**: `data` values redacted in logs; never persisted into playbooks (templating only); run records store data keys, not values, unless `STORE_RUN_INPUTS=true`.
 - **No credential handling in v1**: payloads must not contain login passwords; login flows are out of scope (Open Question for v2 — would require a secrets interface, not raw values in `data`).
-- Webhook signing (§6); API auth per `API_AUTH_MODE`; SQS trust = queue IAM.
+- Webhooks unsigned in v1 and API auth `none` — both descoped to the trusted gateway (DECISIONS #32; `api_key`/`hmac`/`X-Engine-Signature` reserved). SQS trust = queue IAM.
 - Playbooks are data, not code: the runner interprets a fixed op vocabulary; nothing from a playbook is ever `eval`'d.
 
 ## 14. Observability
@@ -467,7 +467,7 @@ REPLAY_LLM_FALLBACK_MODEL=        # provider/name model used only when fallback 
 
 - **Unit**: config resolver, payload validation, templating/provenance, envelope construction, step interpreter (against fixture DOMs via Playwright + local static pages).
 - **Integration**: dockerized engine vs. a bundled fixture website (express app with forms/results pages) — covers agent run → compile → replay → mutate fixture site → self-heal, fully offline except the configured LLM provider's API (none, when using a local model such as Ollama).
-- **Contract tests**: golden envelope fixtures; webhook signing.
+- **Contract tests**: golden envelope fixtures; webhook delivery + retry (unsigned — signing descoped, DECISIONS #32).
 - **Chaos**: kill browser mid-run, storage unavailable, SQS visibility expiry.
 
 ## 16. Implementation Phases (Claude Code roadmap)
@@ -477,7 +477,7 @@ REPLAY_LLM_FALLBACK_MODEL=        # provider/name model used only when fallback 
 3. **Concurrency core**: per-run isolation (one context per run, no shared state), the semaphore + bounded queue (`MAX_CONCURRENT_RUNS` / `MAX_QUEUE_DEPTH`), `RUN_TIMEOUT_SECONDS` enforcement, `/v1/health` saturation, browser recycling. *(Build this before the agent so isolation is proven on the cheap path first.)*
 4. **Agent engine**: Stagehand integration, action recording + provenance, compiler (steps + parameterization + output_format), playbook creation flow.
 5. **Self-heal + LLM fallback**: failure classification, heal flow, version bump + pointer move, unhealthy flagging, surfaced replay LLM-extraction fallback.
-6. **Transports & storage**: webhook delivery + signing, SQS consumer + DLQ + results queue, S3 backends, `api`/`worker` modes.
+6. **Transports & storage**: webhook delivery (unsigned — signing descoped to the gateway, DECISIONS #32), SQS consumer + DLQ + results queue, S3 backends, `api`/`worker` modes.
 7. **Hardening**: SSRF guards, redaction, metrics, chaos tests (kill browser mid-run, storage loss, queue-full backpressure), docs.
 
 ## 17. Resolved Decisions & Open Questions
@@ -489,7 +489,7 @@ REPLAY_LLM_FALLBACK_MODEL=        # provider/name model used only when fallback 
 - **Concurrency model**: three per-container env limits — `MAX_CONCURRENT_RUNS` / `MAX_QUEUE_DEPTH` / `RUN_TIMEOUT_SECONDS` — with full request-isolation invariants (§9.4). Global cross-container cap deferred to v2.
 
 **Still open (don't block Phase 1):**
-1. **API auth v1** — none (internal network trust), static API keys, or HMAC request signing à la KSig1? (Leaning HMAC for parity.)
+1. ~~**API auth v1** — none, static API keys, or HMAC request signing?~~ **Resolved:** `none` / trusted-gateway — in-engine API auth, API keys, and webhook signing are out of scope; an upstream gateway terminates them (DECISIONS #32).
 2. **Synchronous mode** — support `POST /v1/runs?wait=true` (block up to N seconds, return envelope directly) for fast playbook replays? Convenient for callers; complicates timeouts.
 3. **Login flows** — out for v1, but if v2 needs them, reserve a secrets reference (`data: { "password": { "$secret": "vault-key" } }`) now so the payload schema doesn't break later.
 4. **List-valued data / iteration** ("do X for each item") — v2 confirmed, or needed sooner?
