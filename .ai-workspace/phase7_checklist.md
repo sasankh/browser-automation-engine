@@ -7,14 +7,14 @@
 
 Reality drifts; this gate exists because earlier phases may have changed assumptions.
 
-- [ ] Re-read [EXECUTION_STANDARDS.md](../EXECUTION_STANDARDS.md) in full.
-- [ ] Re-read [phase7_plan.md](./phase7_plan.md) and this checklist end to end.
-- [ ] Re-read the referenced master sections: PROJECT_SPEC.md §13, §14 · ARCHITECTURE.md §9, §11.
-- [ ] Confirm the **Phase 6 Plan & Verify gate actually passed** — don't trust the checkbox; spot-check that Phase 6's exit condition holds against the code as built (EXECUTION_STANDARDS §7).
-- [ ] Reconcile the plan against the codebase **as actually built** — note any drift from earlier-phase assumptions.
-- [ ] Verify library/API choices are still current (Stagehand, Playwright, Fastify, Anthropic SDK, pg, Zod) — pin versions in the plan's Notes.
-- [ ] Surface every open question / ambiguity / trade-off to the user. Contract-affecting ambiguity is a STOP-and-ask.
-- [ ] Update the plan + checklist for anything learned, then get the user's **explicit go-ahead**. Only then execute.
+- [x] Re-read [EXECUTION_STANDARDS.md](../EXECUTION_STANDARDS.md) in full (re-read across the Phase 4–6 kickoffs this session; still in force).
+- [x] Re-read [phase7_plan.md](./phase7_plan.md) and this checklist end to end.
+- [x] Re-read the referenced master sections: PROJECT_SPEC.md §13, §14 · ARCHITECTURE.md §9, §11.
+- [x] Confirm the **Phase 6 Plan & Verify gate actually passed** — verified this session: offline 83/3-skip, cloud api→SQS→worker→S3 e2e PASS.
+- [x] Reconcile the plan against the codebase **as actually built** — logger already redacts `data`; run rows store keys-not-values (secure default); `{{data.*}}` provenance ⇒ no raw values in playbook bodies; op-interpreter never `eval`s. **Gaps:** no `auth.ts`/`redactor.ts`/`metrics.ts`; SSRF wired only on the AGENT path (not replay `goto`) + uses boolean `ALLOW_PRIVATE_TARGETS` (plan wants `ALLOWED_PRIVATE_CIDRS`); idempotency caller hardcoded `"default"`.
+- [x] Verify library/API choices are still current — to add: **`prom-client`** (latest-stable) for `/metrics`. Stagehand/Playwright/Fastify/pg/Zod/aws-sdk unchanged from Phase 6.
+- [x] Surface every open question / ambiguity / trade-off to the user — 3 surfaced + answered: **auth/api-key/webhook-signing DESCOPED to the upstream gateway** (DECISIONS #32); self-review + user sign-off (#33). No contract break (auth/metrics rejections follow the 429 transport-rejection pattern, no new §7 code).
+- [x] Update the plan + checklist for anything learned, then get the user's **explicit go-ahead**. — plan + checklist + DECISIONS #32–#33 updated; **awaiting explicit "start Phase 7" before any code.**
 
 ---
 
@@ -27,7 +27,7 @@ Named phase, own gate — not a backlog. Close the security and operability gaps
 - [ ] `SsrfGuard`: deny RFC1918 / 169.254.0.0/16 / loopback / link-local for `url` and every agent navigation; `ALLOWED_PRIVATE_CIDRS` opt-in.
 - [ ] `Redactor`: `data` values redacted in logs/traces; run rows store keys not values (unless `STORE_RUN_INPUTS=true`).
 - [ ] Confirm playbook bodies never contain raw `data` values (only `{{data.*}}`) — automated check in the compiler tests.
-- [ ] Auth mode enforcement per Phase-0 decision (`none|api_key|hmac`); secrets via env/secret-manager only.
+- [ ] ~~Auth mode enforcement (`none|api_key|hmac`)~~ — **DESCOPED to the upstream gateway (DECISIONS #32)**; engine runs `none`. Add a `SECURITY_REVIEW.md` documenting the trusted-gateway posture (#33).
 - [ ] Confirm no playbook content is ever `eval`'d (op-vocabulary interpreter only).
 
 **Observability (architecture §11)**
@@ -91,7 +91,10 @@ Run this section literally, in order. A phase is **not done** until every box he
 
 > Empty Notes after a phase is a red flag, not a clean bill (EXECUTION_STANDARDS §1.5).
 
-- Pinned versions:
-- Deviations from plan (+ why):
-- Benign warnings observed:
-- Open items carried forward:
+**Kickoff (2026-06-17) — pre-build:**
+- **Pinned versions (to install at build):** `prom-client` (latest-stable; `npm view` at install). No other dep changes.
+- **Scope decision (DECISIONS #32):** in-engine **auth / API keys / webhook signing are DESCOPED** — terminated by the upstream gateway; engine runs the `none` posture. Resolves the Phase-6 webhook-signing carry-forward (#30). In-scope = the engine's own responsibilities: SSRF (outbound egress), data no-leak/redaction, no-`eval`, `/metrics`, chaos, docs.
+- **Security gate (DECISIONS #33):** I write `SECURITY_REVIEW.md` (adversarial self-review) + dogfood-quality docs; the **independent sign-off / docs-dogfood is the user's** to close (recorded honestly, not self-attested as independent). User may also run `/security-review` as a second automated pass.
+- **As-built reconciliation:** logger redacts `data`; run rows store keys (secure default); provenance ⇒ no raw values in playbook bodies; no `eval`. Build: `redactor.ts` (+ the automated no-leak scan over logs/run-rows/playbook-bodies), `metrics.ts` (+ `/metrics`, the §11 metric set), SSRF hardening (apply to the replay `goto`; `ALLOWED_PRIVATE_CIDRS` replacing the boolean), `STORE_RUN_INPUTS` flag (default off), chaos tests (storage-down, browser-kill, redelivery, queue-full — some already covered by Phase 3/6 tests).
+- **Contract:** unchanged. A `/metrics` endpoint is additive; no new §7 error codes (no auth path).
+- **Open items carried forward:** independent security sign-off + docs dogfood (user); per-caller webhook signing/auth (gateway / v2).
