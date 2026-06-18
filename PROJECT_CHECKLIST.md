@@ -330,6 +330,8 @@ Swap the local edges for production ones, and split the process roles. The core 
 
 ## Phase 7 — Hardening, Security, Observability, Docs
 
+> **Status: ✅ COMPLETE — v1 done** (pending the user's independent security sign-off + docs dogfood). Plan & Verify gate passed by observation (2026-06-17). **Security:** SSRF deny rules on the initial url, replay `goto`, AND agent nav (`ALLOWED_PRIVATE_CIDRS` allowlist); an automated **no-leak scan** (sentinel value absent from logs / run row / playbook body); no-`eval` assertion; auth descoped to the gateway (DECISIONS #32). **Observability:** Prometheus `/metrics` (full §11 set + process metrics). **Chaos:** evidence-down → run completes; Postgres-down → health 503; redelivery + backpressure (Phase 6/3). **Docs:** README + caller + operator guides + `SECURITY_REVIEW.md`. Offline 97 passed / 3 live-skipped; dockerized cold-start: `/metrics` + cloud api→SQS→worker→S3 e2e green. Granular tracker + Notes: [.ai-workspace/phase7_checklist.md](.ai-workspace/phase7_checklist.md). **Carried forward (user):** independent security sign-off + docs dogfood (DECISIONS #33). **🎉 Phases 0–7 all landed.**
+
 Named phase, own gate — not a backlog. Close the security and operability gaps before real traffic.
 
 ### Tasks

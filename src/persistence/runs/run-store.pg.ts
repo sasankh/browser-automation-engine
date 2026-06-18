@@ -12,6 +12,8 @@ export interface CreateRunInput {
   mode?: RunMode | null;
   playbookId?: string | null;
   playbookVersion?: number | null;
+  /** Raw input values — only when STORE_RUN_INPUTS=true; null by default (keys only). */
+  dataValues?: Record<string, unknown> | null;
 }
 
 export interface FinishRunInput {
@@ -56,8 +58,8 @@ export class RunStore {
 
   async createRun(input: CreateRunInput): Promise<void> {
     await this.db.query(
-      `INSERT INTO runs (id, status, mode, playbook_id, playbook_version, effective_config, data_keys, callback_url)
-       VALUES ($1, 'queued', $2, $3, $4, $5, $6, $7)`,
+      `INSERT INTO runs (id, status, mode, playbook_id, playbook_version, effective_config, data_keys, callback_url, data_values)
+       VALUES ($1, 'queued', $2, $3, $4, $5, $6, $7, $8)`,
       [
         input.id,
         input.mode ?? null,
@@ -66,6 +68,7 @@ export class RunStore {
         input.effectiveConfig,
         input.dataKeys,
         input.callbackUrl,
+        input.dataValues ?? null,
       ],
     );
   }

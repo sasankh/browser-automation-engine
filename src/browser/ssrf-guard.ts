@@ -1,10 +1,8 @@
 /**
- * URL safety for caller-supplied targets and agent navigation (ARCHITECTURE §9, EXECUTION_STANDARDS
- * §4). Two concerns, both pure/testable:
- *  - **SSRF:** refuse private / loopback / link-local / carrier-NAT / cloud-metadata hosts unless
- *    explicitly allowed (the local fixture runs on 127.0.0.1, so dev/test sets `allowPrivateHosts`).
- *  - **Domain confinement:** the agent may not wander off the target site's registrable domain unless
- *    `allow_offsite` is set — the Phase-4 off-site guardrail.
+ * URL safety for caller-supplied targets, **replay `goto`s, and every agent navigation** (ARCHITECTURE
+ * §9, PROJECT_SPEC §13). Refuse private / loopback / link-local / carrier-NAT / cloud-metadata hosts by
+ * default; a deliberate internal target is opted in via `ALLOWED_PRIVATE_CIDRS` (CIDR allowlist) — or
+ * `ALLOW_PRIVATE_TARGETS=true` to permit all private hosts (dev/test, e.g. the 127.0.0.1 fixture).
  */
 export class SsrfError extends Error {
   constructor(message: string) {
@@ -13,9 +11,28 @@ export class SsrfError extends Error {
   }
 }
 
+export interface ParsedCidr {
+  v6: boolean;
+  base: bigint;
+  prefix: number;
+}
+
 export interface UrlGuardOptions {
-  /** Permit private/loopback/link-local hosts (default false). Set in local/test against the fixture. */
-  allowPrivateHosts?: boolean;
+  /** Permit ALL private/loopback/link-local hosts (the `ALLOW_PRIVATE_TARGETS` dev convenience). */
+  allowAllPrivate?: boolean;
+  /** Deliberate internal targets allowed by CIDR (`ALLOWED_PRIVATE_CIDRS`). */
+  allowedCidrs?: ParsedCidr[];
+}
+
+/** Build guard options from env values (used by both the replay and agent paths). */
+export function buildUrlGuardOptions(allowAllPrivate: boolean, cidrsCsv?: string): UrlGuardOptions {
+  const allowedCidrs = (cidrsCsv ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map(parseCidr)
+    .filter((c): c is ParsedCidr => c !== null);
+  return { allowAllPrivate, allowedCidrs };
 }
 
 /** Throw `SsrfError` if the URL is malformed, non-http(s), or targets a blocked host. */
@@ -29,7 +46,10 @@ export function assertAllowedUrl(rawUrl: string, opts: UrlGuardOptions = {}): UR
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new SsrfError(`unsupported url scheme: ${url.protocol}`);
   }
-  if (!opts.allowPrivateHosts && isPrivateHost(url.hostname)) {
+  if (isPrivateHost(url.hostname)) {
+    if (opts.allowAllPrivate) return url;
+    const ip = ipToBigInt(url.hostname.replace(/^\[|\]$/g, ''));
+    if (ip && opts.allowedCidrs?.some((c) => ipInCidr(ip, c))) return url;
     throw new SsrfError(`blocked private/internal target: ${url.hostname}`);
   }
   return url;
@@ -43,7 +63,7 @@ export function isPrivateHost(hostname: string): boolean {
   }
   if (isIpv4(host)) return isPrivateIpv4(host);
   if (host.includes(':')) return isPrivateIpv6(host); // IPv6 literal
-  return false; // a public DNS name; deny rules apply post-resolution in prod (Phase 7), out of scope here
+  return false; // a public DNS name; post-resolution checks are out of scope (we deny by literal)
 }
 
 function isIpv4(host: string): boolean {
@@ -69,10 +89,51 @@ function isPrivateIpv6(ip: string): boolean {
   return false;
 }
 
+/** Parse a CIDR string ("10.0.0.0/8", "::1/128") to a comparable base+prefix, or null if malformed. */
+export function parseCidr(cidr: string): ParsedCidr | null {
+  const [addr, prefixStr] = cidr.split('/');
+  if (!addr || prefixStr === undefined) return null;
+  const prefix = Number(prefixStr);
+  if (!Number.isInteger(prefix) || prefix < 0) return null;
+  const v6 = addr.includes(':');
+  const base = ipToBigInt(addr);
+  if (base === null) return null;
+  if (v6 ? prefix > 128 : prefix > 32) return null;
+  return { v6, base, prefix };
+}
+
+/** Convert an IPv4 or (compact) IPv6 literal to a bigint, or null if it isn't a literal. */
+function ipToBigInt(addr: string): bigint | null {
+  if (isIpv4(addr)) {
+    return addr.split('.').reduce((acc, oct) => (acc << 8n) + BigInt(Number(oct)), 0n);
+  }
+  if (addr.includes(':')) {
+    const [head, tail] = addr.split('::');
+    const headParts = head ? head.split(':') : [];
+    const tailParts = tail ? tail.split(':') : [];
+    const missing = 8 - headParts.length - tailParts.length;
+    if (missing < 0) return null;
+    const groups = [...headParts, ...Array<string>(missing).fill('0'), ...tailParts];
+    if (groups.length !== 8) return null;
+    try {
+      return groups.reduce((acc, g) => (acc << 16n) + BigInt(parseInt(g || '0', 16)), 0n);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function ipInCidr(ip: bigint, cidr: ParsedCidr): boolean {
+  const bits = cidr.v6 ? 128 : 32;
+  if (cidr.prefix === 0) return true;
+  const mask = ((1n << BigInt(cidr.prefix)) - 1n) << BigInt(bits - cidr.prefix);
+  return (ip & mask) === (cidr.base & mask);
+}
+
 /**
  * The registrable domain for confinement comparison — a deliberately simple "last two labels"
- * heuristic (no PSL dependency). Good enough to confine an agent to the target site; IP hosts compare
- * whole. Multi-part TLDs (`co.uk`) are intentionally treated coarsely; revisit if a target needs it.
+ * heuristic (no PSL dependency). IP hosts compare whole. Multi-part TLDs are treated coarsely.
  */
 export function registrableDomain(hostname: string): string {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');

@@ -26,6 +26,7 @@ import { SqsJobEnqueuer, SqsResultsPublisher, NoopResultsPublisher } from './tra
 import type { JobEnqueuer, ResultsPublisher } from './transport/sqs';
 import { SqsConsumer } from './transport/sqs-consumer';
 import { HttpWebhookDispatcher } from './shared/webhook';
+import { registerSaturationGauges } from './shared/metrics';
 import { buildServer } from './transport/http-server';
 import { checkMemoryBudget } from './shared/memory';
 import { logger } from './shared/logger';
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
 
   const pool = new BrowserPool(env.browserRecycleRuns);
   const lifecycle = new Lifecycle(pool, env.maxConcurrentRuns, env.maxQueueDepth);
+  registerSaturationGauges(lifecycle); // live saturation gauges for /metrics
   const { playbookStore, evidence, cache } = makeStorage(env);
   const playbooks = new PlaybookRepository(db, playbookStore);
   const runner = new PlaybookRunner(evidence);

@@ -48,7 +48,7 @@ beforeAll(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'rote-heal-'));
   // Dummy key so model resolution passes (the fakes replace every real model call); threshold=3.
   const nodeEnv: NodeJS.ProcessEnv = { ...process.env, ANTHROPIC_API_KEY: 'sk-test-offline', HEAL_FAILURE_THRESHOLD: '3' };
-  const env = loadEnvConfig({ DATABASE_URL: TEST_DB, STORAGE_LOCAL_PATH: tmp, PORT: '0', HEAL_FAILURE_THRESHOLD: '3' } as NodeJS.ProcessEnv);
+  const env = loadEnvConfig({ DATABASE_URL: TEST_DB, STORAGE_LOCAL_PATH: tmp, PORT: '0', HEAL_FAILURE_THRESHOLD: '3', ALLOW_PRIVATE_TARGETS: 'true' } as NodeJS.ProcessEnv);
   db = createDb(env);
   await runMigrations(db);
   playbooks = new PlaybookRepository(db, new LocalPlaybookStore(env.storageLocalPath));

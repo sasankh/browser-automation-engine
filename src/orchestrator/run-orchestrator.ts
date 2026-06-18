@@ -18,6 +18,8 @@ import { AgentError } from '../execution/agent/agent-engine';
 import type { AgentRunner } from '../execution/agent/agent-engine';
 import { compilePlaybook } from '../execution/agent/compiler';
 import { healPolicyForError, shouldHealExtractionMiss } from './heal';
+import { assertAllowedUrl, buildUrlGuardOptions, SsrfError } from '../browser/ssrf-guard';
+import { recordRunOutcome, recordHeal, recordFallback, recordAgentTokens, recordWebhook, recordRejected } from '../shared/metrics';
 import type { WebhookDispatcher } from '../shared/webhook';
 import type { JobEnqueuer, ResultsPublisher } from '../transport/sqs';
 import { runLogger } from '../shared/logger';
@@ -95,6 +97,7 @@ export class RunOrchestrator {
   /** `all`/HTTP: reserve a slot FIRST (deterministic 429), persist, execute inline. */
   private async submitInline(payload: Payload): Promise<SubmitResult> {
     if (!this.deps.lifecycle.tryReserve()) {
+      recordRejected('queue_full');
       return { kind: 'rejected', http: 429, message: 'too many concurrent runs; retry later', retryAfterSeconds: RETRY_AFTER_SECONDS };
     }
     let consumed = false;
@@ -217,6 +220,8 @@ export class RunOrchestrator {
       effectiveConfig: toEffectiveConfig(prep.behavior),
       dataKeys: Object.keys(data),
       callbackUrl: payload.callback_url ?? null,
+      // Secure default: store keys only. Raw values only when STORE_RUN_INPUTS=true (PROJECT_SPEC §13).
+      dataValues: this.deps.env.storeRunInputs ? data : null,
     };
     if (prep.kind === 'replay') {
       await this.deps.runs.createRun({ ...base, mode: 'playbook', playbookId: prep.playbookId, playbookVersion: prep.version });
@@ -247,6 +252,13 @@ export class RunOrchestrator {
     callbackUrl: string | null,
   ): Promise<void> {
     try {
+      // SSRF pre-flight (ARCHITECTURE §9): a compiled playbook's `goto` targets must pass the deny
+      // rules too — never trust a stored body to only point at public hosts.
+      const blocked = this.replayTargetBlocked(body);
+      if (blocked) {
+        await this.deps.runs.finishRun(runId, { status: 'failed', error: { code: 'navigation_failed', message: blocked.message } });
+        return;
+      }
       const outcome = await this.deps.lifecycle.execute(
         behavior.headless,
         behavior.run_timeout_seconds * 1000,
@@ -292,6 +304,7 @@ export class RunOrchestrator {
         fallbackFields: o.fallbackFields,
       });
       if (o.llmFallbackUsed) {
+        recordFallback(playbookId);
         await this.deps.playbooks.recordFallbackEngagement(playbookId, {
           driftSignal: this.deps.env.fallbackAsDriftSignal,
           threshold: this.deps.env.fallbackDriftThreshold,
@@ -317,6 +330,22 @@ export class RunOrchestrator {
       return { engine: this.deps.fallback, model: behavior.replay_llm_fallback_model };
     }
     return undefined;
+  }
+
+  /** SSRF pre-flight for a replay: the first `goto` target that's blocked is returned (else null). */
+  private replayTargetBlocked(body: PlaybookVersion): SsrfError | null {
+    const opts = buildUrlGuardOptions(this.deps.env.allowPrivateTargets, this.deps.env.allowedPrivateCidrs);
+    for (const step of body.steps) {
+      if (step.op === 'goto' && step.url) {
+        try {
+          assertAllowedUrl(step.url, opts);
+        } catch (err) {
+          if (err instanceof SsrfError) return err;
+          throw err;
+        }
+      }
+    }
+    return null;
   }
 
   /** Does this replay outcome escalate to a self-heal (per §7 + config)? */
@@ -397,6 +426,7 @@ export class RunOrchestrator {
       );
 
       if (outcome.kind === 'timeout') {
+        recordHeal('failed');
         await this.deps.playbooks.recordHealFailure(playbookId, this.deps.env.healFailureThreshold);
         await this.deps.runs.finishRun(runId, {
           status: 'failed',
@@ -426,12 +456,15 @@ export class RunOrchestrator {
         playbookId,
         playbookVersion: newVersion,
       });
+      recordHeal('success');
+      if (learn.usage) recordAgentTokens(learn.usage.inputTokens, learn.usage.outputTokens);
       runLogger(runId).info(
         { playbook_id: playbookId, version: newVersion, usage: learn.usage },
         'self-heal compiled a new version',
       );
     } catch (err) {
       const healOutcome = err instanceof AgentError ? err.code : String(err);
+      recordHeal('failed');
       await this.deps.playbooks.recordHealFailure(playbookId, this.deps.env.healFailureThreshold);
       await this.deps.runs.finishRun(runId, {
         status: 'failed',
@@ -519,6 +552,7 @@ export class RunOrchestrator {
         playbookVersion: version,
       });
       // Economics sanity (plan §risks): the agent run's token cost vs the ~free replay.
+      if (learn.usage) recordAgentTokens(learn.usage.inputTokens, learn.usage.outputTokens);
       runLogger(runId).info(
         { playbook_id: playbookId, version, usage: learn.usage },
         'agent learn compiled to playbook',
@@ -545,11 +579,13 @@ export class RunOrchestrator {
     try {
       const envelope = await this.deps.runs.getEnvelope(runId);
       if (!envelope) return;
+      recordRunOutcome(envelope.meta.mode, envelope.meta.status, envelope.meta.duration_ms);
       if (this.deps.results) {
         await this.deps.results.publish(envelope).catch((err: unknown) => runLogger(runId).warn({ err }, 'results-queue publish failed'));
       }
       if (callbackUrl && this.deps.webhook) {
         const status = await this.deps.webhook.deliver(callbackUrl, envelope, runId);
+        recordWebhook(status);
         await this.deps.runs.setWebhookStatus(runId, status);
       }
     } catch (err) {

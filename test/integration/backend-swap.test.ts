@@ -44,6 +44,7 @@ beforeAll(async () => {
     AWS_ENDPOINT_URL: ENDPOINT,
     AWS_REGION: 'us-east-1',
     PORT: '0',
+    ALLOW_PRIVATE_TARGETS: 'true',
   } as NodeJS.ProcessEnv);
   const s3 = makeS3Client(env);
   await s3.send(new CreateBucketCommand({ Bucket: BUCKET })).catch(() => undefined);

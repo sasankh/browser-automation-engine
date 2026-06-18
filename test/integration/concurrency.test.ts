@@ -51,6 +51,7 @@ async function buildStack(overrides: Record<string, string>): Promise<Stack> {
     DATABASE_URL: TEST_DB,
     STORAGE_LOCAL_PATH: tmp,
     PORT: '0',
+    ALLOW_PRIVATE_TARGETS: 'true',
     ...overrides,
   };
   const env = loadEnvConfig(nodeEnv);

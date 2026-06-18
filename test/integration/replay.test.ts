@@ -37,7 +37,7 @@ let tmp: string;
 beforeAll(async () => {
   fixture = await startFixture();
   tmp = await mkdtemp(join(tmpdir(), 'rote-test-'));
-  const env = loadEnvConfig({ DATABASE_URL: TEST_DB, STORAGE_LOCAL_PATH: tmp, PORT: '0' } as NodeJS.ProcessEnv);
+  const env = loadEnvConfig({ DATABASE_URL: TEST_DB, STORAGE_LOCAL_PATH: tmp, PORT: '0', ALLOW_PRIVATE_TARGETS: 'true' } as NodeJS.ProcessEnv);
   db = createDb(env);
   await runMigrations(db);
   const store = new LocalPlaybookStore(env.storageLocalPath);

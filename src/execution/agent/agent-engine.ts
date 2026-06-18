@@ -6,7 +6,8 @@ import type { ErrorCode } from '../../types/errors';
 import type { RunData } from '../playbook/step-interpreter';
 import type { ResolvedModel } from '../../model/model-gateway';
 import type { AgentLearnResult, ExtractionFields, RecordedAction } from './recorded-action';
-import { assertAllowedUrl, SsrfError, isOffSite } from '../../browser/ssrf-guard';
+import { assertAllowedUrl, buildUrlGuardOptions, SsrfError, isOffSite } from '../../browser/ssrf-guard';
+import { makeValueRedactor } from '../../shared/redactor';
 import { runLogger } from '../../shared/logger';
 
 /** An agent-run failure already classified to a §7 error code (never thrown raw past the engine). */
@@ -71,12 +72,17 @@ export class AgentEngine implements AgentRunner {
 
   async run(input: AgentRunInput): Promise<AgentLearnResult> {
     const log = runLogger(input.runId);
-    const allowPrivateHosts = this.deps.env.ALLOW_PRIVATE_TARGETS === 'true';
+    // Mask data values that could surface in free-text Stagehand log lines (the typed-into-field text).
+    const redact = makeValueRedactor(Object.values(input.data));
+    const guardOpts = buildUrlGuardOptions(
+      this.deps.env.ALLOW_PRIVATE_TARGETS === 'true',
+      this.deps.env.ALLOWED_PRIVATE_CIDRS,
+    );
 
     // SSRF: validate the caller-supplied target before launching anything.
     let target: URL;
     try {
-      target = assertAllowedUrl(input.url, { allowPrivateHosts });
+      target = assertAllowedUrl(input.url, guardOpts);
     } catch (err) {
       if (err instanceof SsrfError) throw new AgentError('navigation_failed', err.message);
       throw err;
@@ -102,7 +108,7 @@ export class AgentEngine implements AgentRunner {
       },
       verbose: 0,
       disablePino: true,
-      logger: (line) => log.debug({ stagehand: line.message }, 'stagehand'),
+      logger: (line) => log.debug({ stagehand: redact(line.message) }, 'stagehand'),
       waitForCaptchaSolves: false,
     });
 

@@ -35,6 +35,10 @@ export interface EnvConfig {
   s3Bucket: string | undefined;
   s3Endpoint: string | undefined; // S3-specific endpoint override (defaults to awsEndpointUrl)
   webhookMaxRetries: number;
+  // Security (Phase 7).
+  allowPrivateTargets: boolean; // permit ALL private hosts (dev/test); prod default false
+  allowedPrivateCidrs: string | undefined; // CIDR allowlist for deliberate internal targets
+  storeRunInputs: boolean; // persist data VALUES on the run row (default false — keys only)
 }
 
 function intEnv(env: NodeJS.ProcessEnv, key: string, def: number): number {
@@ -94,5 +98,8 @@ export function loadEnvConfig(env: NodeJS.ProcessEnv = process.env): EnvConfig {
     s3Bucket: strEnv(env, 'S3_BUCKET'),
     s3Endpoint: strEnv(env, 'S3_ENDPOINT'),
     webhookMaxRetries: intEnv(env, 'WEBHOOK_MAX_RETRIES', 3),
+    allowPrivateTargets: boolEnv(env, 'ALLOW_PRIVATE_TARGETS', false),
+    allowedPrivateCidrs: strEnv(env, 'ALLOWED_PRIVATE_CIDRS'),
+    storeRunInputs: boolEnv(env, 'STORE_RUN_INPUTS', false),
   });
 }

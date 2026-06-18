@@ -8,6 +8,7 @@ import type { Lifecycle } from '../orchestrator/lifecycle';
 import { registerRunRoutes } from './routes/runs';
 import { registerHealthRoutes } from './routes/health';
 import { registerPlaybookRoutes } from './routes/playbooks';
+import { register as metricsRegistry } from '../shared/metrics';
 import { loggerOptions } from '../shared/logger';
 
 export interface ServerDeps {
@@ -39,6 +40,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   app.setNotFoundHandler((_req, reply) => {
     return reply.code(404).send({ error: { message: 'not found' } });
+  });
+
+  // Prometheus scrape endpoint (ARCHITECTURE §11). Unauthenticated — scraped on the private network.
+  app.get('/metrics', async (_req, reply) => {
+    reply.header('Content-Type', metricsRegistry.contentType);
+    return metricsRegistry.metrics();
   });
 
   registerRunRoutes(app, deps.orchestrator, deps.evidence);

@@ -73,7 +73,7 @@ beforeAll(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'rote-sqs-'));
   sqs = makeSqsClient(env);
   runsUrl = (await createQueues()).runsUrl;
-  const storeEnv = loadEnvConfig({ DATABASE_URL: TEST_DB, STORAGE_LOCAL_PATH: tmp, PORT: '0' } as NodeJS.ProcessEnv);
+  const storeEnv = loadEnvConfig({ DATABASE_URL: TEST_DB, STORAGE_LOCAL_PATH: tmp, PORT: '0', ALLOW_PRIVATE_TARGETS: 'true' } as NodeJS.ProcessEnv);
   db = createDb(storeEnv);
   await runMigrations(db);
   playbooks = new PlaybookRepository(db, new LocalPlaybookStore(tmp));

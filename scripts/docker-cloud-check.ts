@@ -73,7 +73,7 @@ async function main(): Promise<void> {
       process.stdout.write('CLOUD api→SQS→worker→S3 E2E: PASS\n');
       return;
     }
-    if (Date.now() - start > 90_000) throw new Error(`timed out: ${JSON.stringify(env2.meta)}`);
+    if (Date.now() - start > 150_000) throw new Error(`timed out: ${JSON.stringify(env2.meta)}`); // cold worker's first browser launch is slow
     await new Promise((r) => setTimeout(r, 1_000));
   }
 }

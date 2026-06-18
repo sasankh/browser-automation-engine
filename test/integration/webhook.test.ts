@@ -70,7 +70,7 @@ beforeAll(async () => {
   fixture = await startFixture();
   tmp = await mkdtemp(join(tmpdir(), 'rote-webhook-'));
   // Low retry count keeps the failed-delivery test fast.
-  const env = loadEnvConfig({ DATABASE_URL: TEST_DB, STORAGE_LOCAL_PATH: tmp, PORT: '0', WEBHOOK_MAX_RETRIES: '2' } as NodeJS.ProcessEnv);
+  const env = loadEnvConfig({ DATABASE_URL: TEST_DB, STORAGE_LOCAL_PATH: tmp, PORT: '0', WEBHOOK_MAX_RETRIES: '2', ALLOW_PRIVATE_TARGETS: 'true' } as NodeJS.ProcessEnv);
   db = createDb(env);
   await runMigrations(db);
   playbooks = new PlaybookRepository(db, new LocalPlaybookStore(env.storageLocalPath));
