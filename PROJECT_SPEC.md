@@ -100,7 +100,7 @@ GET    /v1/health                     liveness/readiness
 - `SQS_ENABLED=true` starts a consumer loop alongside (or instead of) the HTTP server, per `SERVICE_MODE`.
 - Message body = exactly the same JSON payload as `POST /v1/runs`.
 - Visibility timeout must exceed `run_timeout_seconds`; the consumer extends heartbeat for long agent runs.
-- Failed messages (validation errors, repeated crashes) go to a DLQ (`SQS_DLQ_URL`).
+- Failed messages (validation errors, repeated crashes) go to a DLQ (the SQS queue's redrive policy).
 - Results: webhook if `callback_url` present; optionally publish the envelope to `SQS_RESULTS_QUEUE_URL` if configured.
 
 ## 5. Request Payload
@@ -401,15 +401,21 @@ SERVICE_MODE=all | api | worker
 PORT=8080
 STORAGE_BACKEND=local | s3
 STORAGE_LOCAL_PATH=/data
-STORAGE_S3_BUCKET=
-STORAGE_S3_PREFIX=engine/
-CACHE_BACKEND=local | s3
+# (selector cache follows STORAGE_BACKEND — not a separate knob)
 SQS_ENABLED=false
-SQS_QUEUE_URL=
-SQS_DLQ_URL=
-SQS_RESULTS_QUEUE_URL=
+SQS_QUEUE_URL=                     # required when SQS_ENABLED — the run queue
+SQS_RESULTS_QUEUE_URL=             # optional — publish the terminal envelope here
+SQS_VISIBILITY_TIMEOUT_SECONDS=300 # must exceed RUN_TIMEOUT_SECONDS; consumer heartbeats to extend
+# (DLQ is the SQS queue's own redrive policy — configured on the queue, not read by the engine)
+
+# AWS / S3 (STORAGE_BACKEND=s3)
+AWS_REGION=us-east-1
+AWS_ENDPOINT_URL=                  # custom endpoint (e.g. LocalStack) for SQS + S3; unset → real AWS
+S3_BUCKET=
+S3_ENDPOINT=                       # optional S3-specific override (defaults to AWS_ENDPOINT_URL)
 
 # Model providers — env-only secrets/endpoints; pick per-run via config.model = "provider/name"
+CONFIG_MODEL=                      # default model for agent/heal/fallback when the payload omits it
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 GOOGLE_GENERATIVE_AI_API_KEY=
@@ -427,10 +433,19 @@ MAX_QUEUE_DEPTH=20                # in-process requests allowed to wait for a sl
 RUN_TIMEOUT_SECONDS=180           # default hard wall-clock per run; frees the slot if exceeded
 MAX_RUN_TIMEOUT_SECONDS=600       # ceiling a payload-supplied run_timeout_seconds cannot exceed
 BROWSER_RECYCLE_RUNS=10           # recycle a Chromium process after N runs (memory hygiene)
+SHUTDOWN_GRACE_SECONDS=25         # graceful-drain window on SIGTERM before forced exit
 
-# Replay LLM extraction fallback (see §9.2)
+# Self-heal & replay LLM extraction fallback (see §9.2)
+HEAL_FAILURE_THRESHOLD=3          # consecutive heal failures → playbook health=unhealthy
 REPLAY_LLM_FALLBACK=off           # on | off
 REPLAY_LLM_FALLBACK_MODEL=        # provider/name model used only when fallback engages
+FALLBACK_AS_DRIFT_SIGNAL=false    # flag a playbook health=needs_relearn after K fallback engagements
+FALLBACK_DRIFT_THRESHOLD=5        # K
+
+# Security — SSRF egress guard + data handling (Phase 7)
+ALLOW_PRIVATE_TARGETS=false       # dev convenience: permit ALL private hosts
+ALLOWED_PRIVATE_CIDRS=            # prod: allowlist deliberate internal targets, e.g. 10.1.0.0/16
+STORE_RUN_INPUTS=false            # off → run rows store data KEYS, not values
 ```
 
 ## 11. Evidence

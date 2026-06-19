@@ -315,7 +315,7 @@ Swap the local edges for production ones, and split the process roles. The core 
 - [ ] `SERVICE_MODE=all`: HTTP + in-process loop (unchanged from earlier phases).
 
 ### Acceptance criteria
-- Webhook delivered with a valid signature a caller can verify; retried on a simulated 500; `webhook_status` recorded.
+- Webhook delivered (unsigned — signing descoped to the gateway, DECISIONS #32); retried on a simulated 500; `webhook_status` recorded.
 - SQS message with the same payload schema runs identically to the HTTP path; result delivered by webhook and/or results queue.
 - Worker crash mid-run → message redelivered → no duplicate playbook/version/evidence (idempotency holds).
 - Poison message lands in DLQ after max receives.

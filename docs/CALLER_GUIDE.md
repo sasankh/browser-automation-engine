@@ -58,7 +58,7 @@ Poll until `meta.status` is terminal. The envelope:
     "extraction_errors": null,             // [{ field, reason }] on partial extraction
     "webhook_status": null                 // "delivered" | "failed" | null
   },
-  "result": { "license_status": "active", "holder_name": "NGUYEN, A123456", "expiry_date": "2027-12-31" }
+  "result": { "license_status": "active", "holder_name": "NGUYEN, THANH A", "expiry_date": "2027-12-31" }
 }
 ```
 

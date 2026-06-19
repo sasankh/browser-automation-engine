@@ -1,6 +1,6 @@
 # Local Development
 
-> Clone-to-running runbook. Goal: a new contributor (or you in three months) gets a working engine and runs a verification end-to-end without tribal knowledge. Firm up the exact commands as Phase 1 lands.
+> Clone-to-running runbook. Goal: a new contributor (or you in three months) gets a working engine and runs a verification end-to-end without tribal knowledge.
 
 ## 1. Prerequisites
 
@@ -22,7 +22,7 @@ docker compose up --build     # engine + Postgres
 curl localhost:8080/v1/health   # → ok, db up, saturation zeros
 ```
 
-Migrations run automatically on engine start (or via a documented `npm run migrate` — confirm at Phase 1).
+Migrations run automatically on engine start, or run them explicitly with `npm run migrate`.
 
 ## 3. Minimum `.env`
 
@@ -32,7 +32,7 @@ PORT=8080
 DATABASE_URL=postgres://rote:rote@postgres:5432/rote   # in-compose; host-run dev/tests use localhost:5433
 STORAGE_BACKEND=local
 STORAGE_LOCAL_PATH=/data
-CACHE_BACKEND=local
+# (cache follows STORAGE_BACKEND — no separate CACHE_BACKEND knob)
 # Model providers (env-only) — pick per-run via config.model="provider/name"; only for agent/heal/fallback
 CONFIG_MODEL=                 # required for agent/heal/fallback runs, e.g. anthropic/claude-... or ollama/llama3.1
 ANTHROPIC_API_KEY=
@@ -72,11 +72,11 @@ curl -X POST localhost:8080/v1/runs -H 'content-type: application/json' -d '{
 }'
 ```
 
-Point `url` at the bundled fixture site for offline work, or a real Phase-0 test site.
+Point `url` at the bundled fixture site for offline work, or a real target site.
 
 ## 5. The fixture site
 
-`test/fixtures/site` is a local express app with a lookup→results flow, an action-only form, and a mutated variant (for heal tests), plus isolation endpoints (`/iso/set`→`/iso/apply`→`/iso/read`, which stamp a per-run token into the context's cookie + localStorage and read it back) and timing endpoints (`/slow?ms=`, `/hang`) used by the Phase 3 concurrency/isolation tests. Bring it up via the compose test profile (confirm the exact command at Phase 2). Integration tests run fully offline against it.
+`test/fixtures/site` is a local express app with a lookup→results flow, an action-only form, and a mutated variant (for heal tests), plus isolation endpoints (`/iso/set`→`/iso/apply`→`/iso/read`, which stamp a per-run token into the context's cookie + localStorage and read it back) and timing endpoints (`/slow?ms=`, `/hang`) used by the Phase 3 concurrency/isolation tests. It comes up as part of the `docker compose` stack. Integration tests run fully offline against it.
 
 ## 6. Tests
 
