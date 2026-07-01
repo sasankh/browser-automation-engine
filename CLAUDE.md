@@ -8,9 +8,9 @@ A **Universal Instruction-Driven Browser Automation Engine**: a self-hosted, Doc
 
 Read [PROJECT_SPEC.md](PROJECT_SPEC.md) (the *what* + external contract) and [ARCHITECTURE.md](ARCHITECTURE.md) (the *how* + internal layering) before doing substantive work. [ARCHITECTURE.md](ARCHITECTURE.md) §4 walks the core Record→Compile→Parameterize→Replay mechanism end to end.
 
-## Current state: Phases 0–4 built (deterministic replay + concurrency/isolation + agent learn→compile)
+## Current state: Phases 0–7 built — v1 complete
 
-As of 2026-06-17, **Phases 0–4 have landed** (branches `phase-0`…`phase-4`): the Fastify/Zod/pg skeleton + `{meta,result}` envelope (P1), the deterministic zero-LLM playbook runner (P2), the concurrency core + request-isolation invariants (P3), and the Stagehand-v3.5 agent that learns a task and **compiles it into a playbook** the runner replays (P4). The two-speed thesis is real: learn once, replay free. Commands below are live. **Phase 5 (self-heal + surfaced LLM extraction fallback) onward is not built** — do not scaffold ahead; the project is built phase-by-phase under an explicit human go-ahead (see below), and each phase ends with a STOP.
+As of 2026-06-17, **all of Phases 0–7 have landed** — v1 is feature-complete and was squash-merged to `develop`. The phases: the Fastify/Zod/pg skeleton + `{meta,result}` envelope (P1), the deterministic zero-LLM playbook runner (P2), the concurrency core + request-isolation invariants (P3), the Stagehand-v3.5 agent that learns a task and **compiles it into a playbook** the runner replays (P4), **self-heal + the surfaced LLM extraction fallback** (P5 — fallback-first-then-heal, DECISIONS #26), **transports & storage backends** (P6 — HTTP + config-gated SQS, `SERVICE_MODE` ∈ `all|api|worker`; local-FS | S3 bodies/evidence/cache; evidence served on a stable engine path that 302-redirects to a presigned S3 URL, #31), and **security + observability + docs hardening** (P7 — SSRF egress guard on initial+replay+agent nav, data no-leak scan, Prometheus `/metrics`; in-engine auth/webhook-signing descoped to the gateway, #32). The two-speed thesis is real: learn once, replay free. All commands below are live. The phase-by-phase build discipline below remains the governing process for any future (v2) work.
 
 > The agent (learn) path uses **Stagehand v3.5, which owns its own CDP browser** (not the Phase-3 Playwright pool — DECISIONS #21); the deterministic replay path uses the Playwright `BrowserPool`. The live learn step needs a model key (`ANTHROPIC_API_KEY`) and is exercised opt-in via `npm run test:live`; the offline suite proves the compile→replay half with no LLM.
 
@@ -43,7 +43,8 @@ These are correctness requirements, not style preferences. Breaking one is a Pha
 - **Request isolation** ([ARCHITECTURE.md](ARCHITECTURE.md) §8.1): **one Playwright `BrowserContext` per run**, created at start and closed at end; **never** pool/reuse a `Page`/`BrowserContext`/Stagehand instance across runs (the "reuse the page to save startup time" optimization is explicitly forbidden — it is *the* way cross-request contamination gets introduced). **No module-level mutable run state** — a run's context (`run_id`, bound `data`, resolved config, recorder, evidence paths) is threaded explicitly as an argument. A `let currentRun`-style global is an automatic failure.
 - **Provenance-driven templating** ([ARCHITECTURE.md](ARCHITECTURE.md) §4): `data` values become `{{data.key}}` in playbooks by **value-identity tracking through the agent's calls**, never by scanning page text for the string. Do not "simplify" this to a string replace — it silently mis-templates when a data value coincides with page text.
 - **Honest results:** a field that can't be extracted is reported missing (`extraction_errors`), never guessed. The replay LLM extraction fallback, when it engages, is **always surfaced** (`meta.llm_fallback_used`, `meta.fallback_fields`) — a silent rescue is a bug. Never put an LLM call on the replay path except this one config-gated, surfaced fallback.
-- **Config flows one way; data never leaks.** All behavior knobs resolve through `ConfigResolver` as **payload.config > env > built-in default** ([PROJECT_SPEC.md](PROJECT_SPEC.md) §10) — never read `process.env` directly in business logic. Payload config can change *behavior* but never *destinations* (storage/SQS/webhooks/secrets are env-only) and never *capacity ceilings* (`MAX_CONCURRENT_RUNS`, `MAX_QUEUE_DEPTH`, `BROWSER_RECYCLE_RUNS`, `MAX_RUN_TIMEOUT_SECONDS` are env-only). Sensitive `data` values are redacted in logs and never persisted into playbook bodies — only `{{data.*}}` refs.
+- **Config flows one way; data never leaks.** All behavior knobs resolve through `ConfigResolver` as **payload.config > env > built-in default** ([PROJECT_SPEC.md](PROJECT_SPEC.md) §10) — never read `process.env` directly in business logic. Payload config can change *behavior* but never *destinations* (storage/SQS/webhooks/secrets are env-only) and never *capacity ceilings* (`MAX_CONCURRENT_RUNS`, `MAX_QUEUE_DEPTH`, `BROWSER_RECYCLE_RUNS`, `MAX_RUN_TIMEOUT_SECONDS` are env-only). Sensitive `data` values are redacted in logs and never persisted into playbook bodies — only `{{data.*}}` refs; run rows store data *keys*, not values, unless `STORE_RUN_INPUTS=true` (off by default).
+- **Auth & webhook signing are descoped to the gateway (DECISIONS #32).** v1 ships `API_AUTH_MODE=none` (non-`none` values are accepted but **not enforced** — there is no `AuthGuard`), and webhooks are **unsigned**. Don't "restore" in-engine API-key/HMAC auth or an `X-Engine-Signature` expecting they exist — an upstream trusted gateway owns caller identity and webhook verification. SSRF egress protection, by contrast, **is** the engine's own job and guards the initial `url`, every replay `goto`, and all agent navigation.
 
 ## Two release-blocking regression tests
 
@@ -52,18 +53,20 @@ Once their phase lands, these must pass and stay passing in every later phase (a
 1. **Phase 3 isolation cross-contamination test** — N concurrent runs each see only their own session/cookie state. The single most important test in the project. Concurrency claims require an actual burst, never a single-request assertion.
 2. **Phase 4 learn→replay round-trip** — a freshly compiled playbook replays with *different* `data` and no LLM. This is the two-speed thesis.
 
-## Tech stack & layout (planned)
+## Tech stack & layout
 
-- **Runtime:** TypeScript / Node 24 (latest LTS; strict mode — no `any`; use `unknown` + narrowing or Zod-inferred types). Stagehand is TS-native, which drove the runtime choice.
-- **Server:** Fastify; **validation:** Zod; **logging:** pino (structured JSON, `run_id`-scoped, redacted).
-- **Browser:** Playwright + Chromium; agent layer uses Stagehand.
-- **Store:** PostgreSQL everywhere for run records + playbook index (transactional `active_version` pointer moves); playbook *bodies* and evidence are blobs in local FS or S3. Schema in [ARCHITECTURE.md](ARCHITECTURE.md) §5.1; any schema change ships as a numbered migration in the same commit and is never edited in place.
-- **Transports:** HTTP (always) + SQS (config-gated); `SERVICE_MODE` ∈ `all | api | worker`.
-- Planned `src/` module layout is in [ARCHITECTURE.md](ARCHITECTURE.md) §12.
+- **Runtime:** TypeScript `^6` / Node `>=24` (strict mode — no `any`; use `unknown` + narrowing or Zod-inferred types). Stagehand is TS-native, which drove the runtime choice.
+- **Server:** Fastify `^5`; **validation:** Zod `^4`; **logging:** pino `^10` (structured JSON, `run_id`-scoped, redacted); **IDs:** `ulidx` (`run_`/`pb_`).
+- **Browser:** Playwright `^1.61` + Chromium; agent layer uses **Stagehand `^3.5`** (owns its own CDP browser).
+- **Model layer:** one `ModelGateway` over the **Vercel AI SDK** (`ai ^5` + `@ai-sdk/anthropic ^2`); `model` is a required `provider/name` string with no built-in default. Models are called in exactly two places — the agent path and the surfaced replay fallback.
+- **Store:** PostgreSQL (`pg ^8`) everywhere for run records + playbook index (transactional `active_version` pointer moves); playbook *bodies* and evidence are blobs in local FS or S3 (`@aws-sdk/client-s3`). Schema in [DATA_MODEL.md](DATA_MODEL.md) / [ARCHITECTURE.md](ARCHITECTURE.md) §5.1; any schema change ships as a numbered migration (`migrations/000N_*.sql`) in the same commit and is never edited in place.
+- **Transports:** HTTP (always) + SQS (config-gated, `@aws-sdk/client-sqs`); `SERVICE_MODE` ∈ `all | api | worker`.
+- **Observability:** Prometheus `/metrics` (`prom-client ^15`); **tests:** vitest `^4`.
+- `src/` module layout is in [ARCHITECTURE.md](ARCHITECTURE.md) §12. Deeper guides: [API_REFERENCE.md](API_REFERENCE.md), [DATA_MODEL.md](DATA_MODEL.md), [SECURITY.md](SECURITY.md), [docs/CALLER_GUIDE.md](docs/CALLER_GUIDE.md), [docs/OPERATOR_GUIDE.md](docs/OPERATOR_GUIDE.md).
 
-## Commands (planned — confirm as Phase 1 lands)
+## Commands
 
-From [LOCAL_DEV.md](LOCAL_DEV.md); these do not exist until the skeleton is built:
+From [LOCAL_DEV.md](LOCAL_DEV.md):
 
 ```bash
 docker compose up --build     # engine + Postgres (SERVICE_MODE=all, local FS storage)

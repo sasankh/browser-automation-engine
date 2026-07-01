@@ -54,7 +54,7 @@ The engine is a modular monolith — one deployable, clean internal seams so com
 │ TRANSPORT          HttpServer (Fastify)   │  SqsConsumer      │
 ├─────────────────────────────────────────────────────────────┤
 │ INTAKE             PayloadValidator · ConfigResolver ·        │
-│                    IdempotencyGuard · AuthGuard               │
+│                    IdempotencyGuard                           │
 ├─────────────────────────────────────────────────────────────┤
 │ ORCHESTRATION                 RunOrchestrator                 │
 │                 (resolution logic · run lifecycle · heal)     │
@@ -65,8 +65,8 @@ The engine is a modular monolith — one deployable, clean internal seams so com
 │  StructuralExtractor      │   PlaybookCompiler                │
 │  LlmExtractFallback ──────┼──► (ModelGateway)                 │
 ├──────────────────────────┴──────────────────────────────────┤
-│ BROWSER            BrowserPool · BrowserContextFactory        │
-│                    (Playwright · Chromium · proxy · stealth)  │
+│ BROWSER            BrowserPool                                │
+│                    (Playwright · Chromium)                    │
 ├─────────────────────────────────────────────────────────────┤
 │ PERSISTENCE        PlaybookStore   EvidenceStore   RunStore   │
 │                    (local|S3)      (local|S3)      (Postgres) │
@@ -87,7 +87,7 @@ The engine is a modular monolith — one deployable, clean internal seams so com
 - **PayloadValidator** — Zod schema for the payload (spec §5); rejects with `validation_error` before any work. Enforces the resolution preconditions (instruction+url OR playbook_id present).
 - **ConfigResolver** — produces the effective config by merging payload `config` ← env ← built-in defaults, per key (spec §10). Pure function; output stored on the run and echoed in `meta.effective_config`.
 - **IdempotencyGuard** — `(caller, idempotency_key)` unique; a repeat returns the existing run's current envelope instead of launching a new browser session.
-- **AuthGuard** — pluggable (`none | api_key | hmac`); see §9.
+- **Auth** — v1 ships `API_AUTH_MODE=none` (trusted-gateway posture); in-engine `api_key`/`hmac` enforcement is **reserved, not built** (no `AuthGuard` — the enum is accepted but only `none` is enforced). Caller identity is terminated upstream by the gateway. See §9 (DECISIONS #32).
 
 ### 3.3 Orchestration layer
 
@@ -102,19 +102,19 @@ The engine is a modular monolith — one deployable, clean internal seams so com
 - **AgentEngine** — wraps Stagehand **v3.5**, configured with the `model`/key resolved via the `ModelGateway`. The learn flow records via **structured `act()`** — driving the form one field at a time so Stagehand returns the operated selector and each value's data key is known directly (provenance from the call, §4) — then `act` to submit and `extract`+per-field `observe` for the extraction selectors; the autonomous `agent()` is not used for recording (its history surfaces fills as value-less clicks — DECISIONS #24). Stagehand v3 is CDP-native and **owns its own browser** — one instance per agent run, disposed at run end (DECISIONS #21) — so agent runs do **not** use the Playwright `BrowserPool` (that stays the replay path's browser); both are isolated and both are gated by the `Lifecycle` (`executeAgent`: the semaphore + a wall-clock `AbortSignal` that cancels the agent on timeout). Enforces guardrails (step budget, domain confinement via `ssrf-guard`, CAPTCHA short-circuit, wall clock). The only module that imports Stagehand.
 - **ActionRecorder** — observes the agent: records each effective action as `{op, selector, fallback_selectors, description, dataProvenance}` in order. The provenance field is the link from a typed value back to its `data` key (§4).
 - **PlaybookCompiler** — turns the recorded action list into a version file: parameterizes values via provenance, attaches `output_format`, derives `required_data_keys`, writes the version + updates the index/meta.
-- **ModelGateway** (`src/model/`) — resolves the `model` string (`provider/name`) to a provider + its **env-only** secret (key + optional base URL), and enforces **require-explicit**: there is no built-in default, so a run that needs a model with none resolved fails `validation_error`. As built in Phase 4 this is resolution + validation only — Stagehand bundles the Vercel AI SDK and owns the *agent's* model call; the gateway hands it the resolved `model`/key. The direct AI-SDK model client (for `LlmExtractFallback`) lands here in Phase 5. It is the only model entry point for both `AgentEngine` and `LlmExtractFallback`; the deterministic runner/interpreter/structural-extractor never import it (zero-LLM path).
+- **ModelGateway** (`src/model/`) — resolves the `model` string (`provider/name`) to a provider + its **env-only** secret (key + optional base URL), and enforces **require-explicit**: there is no built-in default, so a run that needs a model with none resolved fails `validation_error`. Two call sites: for the **agent path** Stagehand bundles the Vercel AI SDK and owns the model call, so the gateway hands it the resolved `model`/key; for the **replay fallback** the gateway makes the model call itself (`generateObject`, Anthropic wired) on behalf of `LlmExtractFallback`. It is the only model entry point for both `AgentEngine` and `LlmExtractFallback`; the deterministic runner/interpreter/structural-extractor never import it (zero-LLM path).
 
 ### 3.5 Browser layer
 
 - **BrowserPool** — manages Chromium processes; one context per run; recycles a process every `BROWSER_RECYCLE_RUNS`. Caps concurrency (`CONFIG_CONCURRENCY`).
-- **BrowserContextFactory** — builds a context per effective config: `channel` (real Chrome vs bundled), viewport/locale/timezone, proxy wiring, headless flag, stealth defaults.
+- **BrowserContextFactory** *(planned / v1 gap — not built)* — as built, `pool.ts` creates a default `BrowserContext` per run (clean cookie jar), keyed only by the `headless` flag. The richer per-config context — `channel` (real Chrome vs bundled), viewport/locale/timezone, proxy wiring, stealth defaults — is designed but **not yet implemented**.
 
 ### 3.6 Persistence layer — see §5.
 
 ### 3.7 Cross-cutting
 
-- **WebhookDispatcher** — HMAC-signs the envelope, POSTs to `callback_url`, retries (3×, backoff), records delivery status on the run.
-- **SsrfGuard** — validates `url` and every agent navigation against deny rules (RFC1918, link-local, 169.254.169.254, loopback) unless explicitly allowlisted.
+- **WebhookDispatcher** — POSTs the envelope to `callback_url`, retries (`WEBHOOK_MAX_RETRIES`, default 3, backoff) on non-2xx, records `webhook_status` on the run. **Unsigned in v1** — an `X-Engine-Signature` HMAC is reserved for whenever caller auth is added (DECISIONS #30/#32).
+- **SsrfGuard** — validates the initial `url`, every **replay `goto`**, and every agent navigation against deny rules (RFC1918, link-local, 169.254.169.254, loopback, CGNAT, IPv6 ULA) unless explicitly allowlisted (`ALLOWED_PRIVATE_CIDRS`).
 - **Redactor** — strips/masks `data` values from logs and traces.
 - **Logger/Metrics** — structured run-scoped logs; Prometheus metrics (spec §14).
 
@@ -198,8 +198,9 @@ CREATE TABLE playbooks (
   playbook_type      TEXT NOT NULL,              -- 'extraction' | 'action'
   required_data_keys TEXT[] NOT NULL DEFAULT '{}',
   active_version     INT  NOT NULL,
-  health             TEXT NOT NULL DEFAULT 'healthy', -- 'healthy'|'unhealthy'
+  health             TEXT NOT NULL DEFAULT 'healthy', -- 'healthy'|'unhealthy'|'needs_relearn'
   consecutive_heal_failures INT NOT NULL DEFAULT 0,
+  fallback_engaged_count INT NOT NULL DEFAULT 0,   -- LLM-fallback engagements; drift signal (migration 0003)
   deleted            BOOLEAN NOT NULL DEFAULT false
 );
 
@@ -228,7 +229,9 @@ CREATE TABLE runs (
   result          JSONB,                        -- extracted output_format shape (migration 0002)
   error           JSONB,
   extraction_errors JSONB,
+  fallback_fields JSONB,                         -- fields the LLM fallback resolved (meta.fallback_fields; migration 0003)
   data_keys       TEXT[] NOT NULL DEFAULT '{}', -- keys only; values never stored unless STORE_RUN_INPUTS
+  data_values     JSONB,                         -- raw data VALUES; only when STORE_RUN_INPUTS=true (migration 0004)
   evidence_uri    TEXT,
   callback_url    TEXT,
   webhook_status  TEXT,                         -- pending|delivered|failed
@@ -266,7 +269,7 @@ Orchestrator → EvidenceStore: screenshot + html
 Orchestrator → PlaybookCompiler: actions → vN.json (+ parameterize, required_keys, format)
 PlaybookCompiler → PlaybookStore (body) + Postgres (playbooks, playbook_versions)
 Orchestrator → RunStore:      runs row = completed, mode=agent, playbook_id, version=1
-Orchestrator → WebhookDispatcher: signed envelope → callback_url
+Orchestrator → WebhookDispatcher: envelope → callback_url   (unsigned in v1)
 ```
 
 ### 6.2 Replay (playbook mode, the common case)
@@ -298,7 +301,7 @@ The fallback exists so a minor layout shift doesn't force a full heal, but it mu
 - If the LLM fallback itself can't resolve a field → that field is an extraction error as normal.
 - A run that needed the fallback is `completed` (data is correct) but is **counted in metrics** (`fallback_engaged_total`, per-playbook) so a playbook quietly drifting toward obsolescence is visible. Optional: `FALLBACK_AS_DRIFT_SIGNAL=on` flags the playbook for proactive re-learn after K fallback engagements.
 - Config keys: `REPLAY_LLM_FALLBACK` (on|off, env; payload-overridable as `config.replay_llm_fallback`), `REPLAY_LLM_FALLBACK_MODEL` (env; payload-overridable as `config.replay_llm_fallback_model`).
-- **As built (Phase 5):** the fallback runs via the `ModelGateway` (`generateObject`, Anthropic wired) and is **fallback-first-then-heal** — a miss still present after the fallback escalates to self-heal (§6.4) only if `self_heal_on_extraction_failure` (DECISIONS #26). `fallback_engaged_total` is a **persistent per-playbook DB count** (`playbooks.fallback_engaged_count`); `FALLBACK_AS_DRIFT_SIGNAL=on` flags `health='needs_relearn'` after `FALLBACK_DRIFT_THRESHOLD` engagements. Prometheus export is deferred to the observability work.
+- **As built (Phase 5):** the fallback runs via the `ModelGateway` (`generateObject`, Anthropic wired) and is **fallback-first-then-heal** — a miss still present after the fallback escalates to self-heal (§6.4) only if `self_heal_on_extraction_failure` (DECISIONS #26). `fallback_engaged_total` is a **persistent per-playbook DB count** (`playbooks.fallback_engaged_count`); `FALLBACK_AS_DRIFT_SIGNAL=on` flags `health='needs_relearn'` after `FALLBACK_DRIFT_THRESHOLD` engagements. Prometheus export shipped in Phase 7 (the `fallback_engaged_total{playbook_id}` counter, §11).
 
 ### 6.4 Self-heal
 
@@ -319,9 +322,9 @@ Orchestrator: heal-eligible code? AND resolved playbook_self_heal == true?
 
 - **Process model:** one Playwright `BrowserContext` per run (clean cookies/storage), N contexts per Chromium process, process recycled every `BROWSER_RECYCLE_RUNS` to bound memory. `tini` as PID 1 reaps Chrome zombies.
 - **Concurrency:** a semaphore of size `MAX_CONCURRENT_RUNS` gates context acquisition; SQS prefetch and the internal job loop both respect it so a container never oversubscribes its CPU/RAM (budget ~1 vCPU / 2 GB per concurrent run). See §8 for the full three-limit model (concurrent / queued / timeout).
-- **Stealth posture (v1, conservative):** real-Chrome `channel` option, realistic viewport/locale/timezone (locale derivable from target or config), standard navigator hardening Playwright provides. No CAPTCHA solving — `captcha_detected` short-circuits to a clean failure.
-- **Proxy:** when `proxy_enabled` (env default, per-run overridable), context launches through `PROXY_URL` with env-only credentials. Per-playbook "needs proxy" can be encoded later as a stored hint; v1 keeps it a config decision.
-- **SSRF confinement:** `BrowserContextFactory` + `SsrfGuard` block private/link-local/metadata targets; agent navigation is confined to the target's registrable domain unless `allow_offsite`.
+- **Stealth posture (planned / v1 gap):** the conservative design — real-Chrome `channel`, realistic viewport/locale/timezone, standard navigator hardening — is **not yet wired**; as built, runs use Playwright's default Chromium context. CAPTCHA solving is a deliberate non-goal regardless — `captcha_detected` short-circuits to a clean failure.
+- **Proxy (planned / v1 gap):** `proxy_enabled` / `PROXY_URL` are reserved knobs; per-run proxy wiring through the context is **not yet implemented**.
+- **SSRF confinement:** `ssrf-guard.ts` blocks private/link-local/metadata targets at the initial `url`, every replay `goto`, and every agent navigation; agent navigation is additionally confined to the target's registrable domain unless `allow_offsite`.
 
 ## 8. Concurrency, Request Isolation, Scaling, Reliability
 
@@ -414,8 +417,8 @@ A crashing run kills only its own context; the pool replaces it, and other in-fl
 
 ## 9. Security Architecture
 
-- **Auth (pluggable, `API_AUTH_MODE`):** `none` (private network), `api_key` (per-caller keys, hashed at rest, used as the idempotency `caller` scope), `hmac` (KSig1-style request signing — recommended for parity with Kompliant). SQS path trust = queue IAM.
-- **Webhook integrity:** HMAC-SHA256 over raw body, `X-Engine-Signature`, per-caller secret; callers verify before trusting.
+- **Auth (`API_AUTH_MODE`):** v1 runs behind a trusted gateway and ships **`none`** — the only enforced mode; `api_key` / `hmac` are accepted enum values but **not enforced** in-engine (there is no `AuthGuard`). Caller identity/auth is the gateway's responsibility (DECISIONS #32). SQS path trust = queue IAM.
+- **Webhook integrity:** webhooks are **unsigned in v1** — delivered to `callback_url` and retried, with `webhook_status` recorded. An `X-Engine-Signature` HMAC (per-caller secret over the raw body) is **reserved** for whenever caller auth is added; verification is currently the gateway's job (DECISIONS #30/#32).
 - **SSRF:** deny RFC1918 / 169.254.0.0/16 / loopback / link-local for `url` and all agent navigation; `ALLOWED_PRIVATE_CIDRS` opt-in for deliberate internal targets.
 - **Secrets & data:** model-provider keys/endpoints (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `OLLAMA_BASE_URL`), proxy creds, webhook secrets, DB creds are env/secret-manager only, never in payloads. `data` values are redacted in logs and **never** persisted into playbook bodies (provenance templating guarantees only `{{data.*}}` refs are stored). Run rows store data *keys*, not values, unless `STORE_RUN_INPUTS=true` (off by default).
 - **No code execution from learned artifacts:** the runner interprets a fixed op vocabulary; a playbook can never introduce executable code.
@@ -455,25 +458,27 @@ BROWSER_RECYCLE_RUNS=10        # recycle a Chromium process after N runs (memory
 
 ```
 src/
-  transport/      http-server.ts  sqs-consumer.ts  routes/
-  intake/         payload-schema.ts  config-resolver.ts  idempotency.ts  auth.ts
-  orchestrator/   run-orchestrator.ts  resolution.ts  heal.ts  lifecycle.ts
+  transport/      http-server.ts  sqs-consumer.ts  sqs.ts  routes/   # health.ts  runs.ts  playbooks.ts
+  intake/         payload-schema.ts  config-resolver.ts  idempotency.ts
+  orchestrator/   run-orchestrator.ts  heal.ts  lifecycle.ts          # resolution logic lives in run-orchestrator.ts
   execution/
-    playbook/     runner.ts  step-interpreter.ts  structural-extractor.ts  llm-fallback.ts
+    playbook/     runner.ts  step-interpreter.ts  structural-extractor.ts  playbook-schema.ts  llm-fallback.ts
     agent/        agent-engine.ts  action-recorder.ts  provenance.ts  compiler.ts  recorded-action.ts
   model/          model-gateway.ts          # resolves model "provider/name" → provider+env key (DECISIONS #11)
-  browser/        pool.ts  context-factory.ts  ssrf-guard.ts
+  browser/        pool.ts  ssrf-guard.ts    # context-factory.ts: planned, not built (§3.5)
   persistence/
+    db.ts  migrate.ts  aws.ts               # pg pool · migration runner · shared AWS clients (SQS/S3)
     runs/         run-store.pg.ts
-    playbooks/    index.pg.ts  store.local.ts  store.s3.ts  store.ts
-    evidence/     evidence.local.ts  evidence.s3.ts
-    cache/        selector-cache.ts
-  shared/         logger.ts  metrics.ts  webhook.ts  redactor.ts  envelope.ts  config.ts  ids.ts
-  types/          payload.ts  playbook.ts  envelope.ts  run.ts
+    playbooks/    repository.ts  store.ts  store.local.ts  store.s3.ts
+    evidence/     evidence.ts  evidence.local.ts  evidence.s3.ts
+    cache/        selector-cache.ts  selector-cache.s3.ts
+  shared/         env.ts  logger.ts  metrics.ts  webhook.ts  redactor.ts  envelope.ts  ids.ts  memory.ts
+  types/          envelope.ts  errors.ts  playbook.ts  run.ts
+  index.ts
 test/
   unit/  integration/  fixtures/site/   # bundled express fixture website
-Dockerfile  docker-compose.yml          # engine + postgres for local
-migrations/                             # Postgres (node-pg-migrate or similar)
+Dockerfile  docker-compose.yml  docker-compose.cloud.yml   # engine + postgres (+ LocalStack for cloud e2e)
+migrations/                             # Postgres — numbered, append-only (0001…0004)
 ```
 
 Storage interfaces (`PlaybookStore`, `EvidenceStore`) have `local` + `s3` implementations chosen at boot by config; everything above the persistence layer is backend-agnostic.

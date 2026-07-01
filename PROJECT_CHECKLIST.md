@@ -1,5 +1,7 @@
 # PROJECT_CHECKLIST: Universal Browser Automation Engine
 
+> **Status: ✅ v1 complete — Phases 0–7 all landed (2026-06-17).** The per-phase **Status** blocks below carry the details; this file's inline task checkboxes are a high-level index (the granular per-phase trackers live in `.ai-workspace/phaseN_checklist.md`).
+
 > Companion to `PROJECT_SPEC.md` and `ARCHITECTURE.md`. This is the build tracker — each phase has its tasks, the acceptance criteria that define "done", and a **Plan & Verify gate** at the end. Do not start a phase until the previous phase's gate passes.
 >
 > **How to use:** check boxes as you go. The Plan & Verify gate at the end of each phase is mandatory — it's the checkpoint where you confirm the phase actually works in isolation before building the next layer on top of it. A phase is not "done" because the code is written; it's done when its gate passes.
@@ -292,7 +294,7 @@ Swap the local edges for production ones, and split the process roles. The core 
 ### Tasks
 
 **Webhooks**
-- [ ] `WebhookDispatcher`: POST the envelope to `callback_url`; HMAC-SHA256 sign over raw body (`X-Engine-Signature`, per-caller secret).
+- [x] `WebhookDispatcher`: POST the envelope to `callback_url`. **HMAC-SHA256 signing descoped** — webhook verification is the trusted gateway's job (`X-Engine-Signature` reserved, DECISIONS #32).
 - [ ] Retry 3× with backoff on non-2xx; record `webhook_status` on the run.
 
 **SQS (architecture §8 / spec §4.2)**
@@ -313,7 +315,7 @@ Swap the local edges for production ones, and split the process roles. The core 
 - [ ] `SERVICE_MODE=all`: HTTP + in-process loop (unchanged from earlier phases).
 
 ### Acceptance criteria
-- Webhook delivered with a valid signature a caller can verify; retried on a simulated 500; `webhook_status` recorded.
+- Webhook delivered (unsigned — signing descoped to the gateway, DECISIONS #32); retried on a simulated 500; `webhook_status` recorded.
 - SQS message with the same payload schema runs identically to the HTTP path; result delivered by webhook and/or results queue.
 - Worker crash mid-run → message redelivered → no duplicate playbook/version/evidence (idempotency holds).
 - Poison message lands in DLQ after max receives.
@@ -340,7 +342,7 @@ Named phase, own gate — not a backlog. Close the security and operability gaps
 - [ ] `SsrfGuard`: deny RFC1918 / 169.254.0.0/16 / loopback / link-local for `url` and every agent navigation; `ALLOWED_PRIVATE_CIDRS` opt-in.
 - [ ] `Redactor`: `data` values redacted in logs/traces; run rows store keys not values (unless `STORE_RUN_INPUTS=true`).
 - [ ] Confirm playbook bodies never contain raw `data` values (only `{{data.*}}`) — automated check in the compiler tests.
-- [ ] Auth mode enforcement per Phase-0 decision (`none|api_key|hmac`); secrets via env/secret-manager only.
+- [~] Auth mode enforcement **descoped to the gateway** (DECISIONS #32) — `API_AUTH_MODE=none` is the only enforced mode; `api_key`/`hmac` reserved. Secrets remain env/secret-manager only.
 - [ ] Confirm no playbook content is ever `eval`'d (op-vocabulary interpreter only).
 
 **Observability (architecture §11)**

@@ -26,8 +26,9 @@ CREATE TABLE playbooks (
   playbook_type              TEXT NOT NULL,               -- 'extraction' | 'action'
   required_data_keys         TEXT[] NOT NULL DEFAULT '{}',
   active_version             INT  NOT NULL,
-  health                     TEXT NOT NULL DEFAULT 'healthy', -- 'healthy' | 'unhealthy'
+  health                     TEXT NOT NULL DEFAULT 'healthy', -- 'healthy' | 'unhealthy' | 'needs_relearn'
   consecutive_heal_failures  INT  NOT NULL DEFAULT 0,
+  fallback_engaged_count     INT  NOT NULL DEFAULT 0,      -- LLM-fallback engagements; drift signal (migration 0003)
   deleted                    BOOLEAN NOT NULL DEFAULT false
 );
 
@@ -55,7 +56,9 @@ CREATE TABLE runs (
   result             JSONB,                        -- extracted output_format shape (migration 0002); null for action/failed
   error              JSONB,
   extraction_errors  JSONB,
+  fallback_fields    JSONB,                         -- fields the LLM fallback resolved (meta.fallback_fields; migration 0003)
   data_keys          TEXT[] NOT NULL DEFAULT '{}',  -- keys only; values never stored unless STORE_RUN_INPUTS
+  data_values        JSONB,                         -- raw data VALUES; only when STORE_RUN_INPUTS=true (migration 0004)
   evidence_uri       TEXT,
   callback_url       TEXT,
   webhook_status     TEXT,                  -- pending | delivered | failed
@@ -72,7 +75,7 @@ CREATE TABLE idempotency_keys (
 );
 ```
 
-**Transactional invariant:** the `active_version` move (on heal/relearn/activate) is a single transaction — insert the `playbook_versions` row, then update `playbooks.active_version` — so a reader never sees a dangling pointer. Migrations are append-only and numbered; never edit a shipped migration.
+**Transactional invariant:** the `active_version` move (on heal/relearn/activate) is a single transaction — insert the `playbook_versions` row, then update `playbooks.active_version` — so a reader never sees a dangling pointer. Migrations are append-only and numbered; never edit a shipped migration. Shipped: `0001_init`, `0002_run_result` (`runs.result`), `0003_fallback_drift` (`playbooks.fallback_engaged_count`, `runs.fallback_fields`), `0004_run_inputs` (`runs.data_values`).
 
 ## 3. Playbook body layout (store)
 

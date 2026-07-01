@@ -1,6 +1,6 @@
 # Testing Strategy
 
-> Expands `PROJECT_SPEC.md` §15. Defines the test architecture, the fixture harness, how the LLM provider API is handled deterministically, and the two permanent release-blocking tests. Write/extend this as the fixture site is built (Phase 2).
+> Expands `PROJECT_SPEC.md` §15. Defines the test architecture, the fixture harness, how the LLM provider API is handled deterministically, and the two permanent release-blocking tests.
 
 ## 1. Pyramid for this system
 
@@ -44,7 +44,7 @@ This keeps the two thesis tests (below) deterministic while still catching real-
 - Agent learn → compile → **replay with different data** (the round-trip).
 - Mutate fixture (renamed selector) → runner fails → heal → v2 replays.
 - LLM fallback surfacing (on and off).
-- Webhook delivery + signature + retry.
+- Webhook delivery + retry (unsigned — signing descoped, DECISIONS #32).
 - SQS path identical to HTTP path; redelivery idempotency; DLQ.
 - Storage backend swap (local ↔ S3) — same suite passes.
 
