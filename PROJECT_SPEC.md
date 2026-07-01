@@ -1,6 +1,6 @@
 # PROJECT_SPEC: Universal Instruction-Driven Browser Automation Engine
 
-> Working name: **engine** (final name TBD — see Open Questions)
+> **Rote** — name settled in DECISIONS #6.
 > Status: Draft v1 — for review before implementation
 > Format: This spec is written to be executed incrementally with Claude Code. Phases are at the end.
 
@@ -421,6 +421,7 @@ OPENAI_API_KEY=
 GOOGLE_GENERATIVE_AI_API_KEY=
 OLLAMA_BASE_URL=                   # e.g. http://localhost:11434/v1 (OpenAI-compatible; local, no external call)
 OPENAI_BASE_URL=                   # optional: OpenAI-compatible gateway (vLLM/LM Studio/OpenRouter/Azure)
+ANTHROPIC_BASE_URL=                # optional: Anthropic-compatible gateway ROOT; engine appends /v1 if absent
 
 WEBHOOK_SIGNING_SECRET=             # reserved — webhooks are unsigned in v1 (verification at the gateway, DECISIONS #32)
 API_AUTH_MODE=none | api_key | hmac # only `none` is enforced in v1; api_key/hmac reserved (DECISIONS #32)
@@ -446,6 +447,7 @@ FALLBACK_DRIFT_THRESHOLD=5        # K
 ALLOW_PRIVATE_TARGETS=false       # dev convenience: permit ALL private hosts
 ALLOWED_PRIVATE_CIDRS=            # prod: allowlist deliberate internal targets, e.g. 10.1.0.0/16
 STORE_RUN_INPUTS=false            # off → run rows store data KEYS, not values
+CHROMIUM_EXECUTABLE_PATH=         # optional: pin the Chromium binary for the agent browser (Docker uses the image's)
 ```
 
 ## 11. Evidence
@@ -509,5 +511,5 @@ STORE_RUN_INPUTS=false            # off → run rows store data KEYS, not values
 3. **Login flows** — out for v1, but if v2 needs them, reserve a secrets reference (`data: { "password": { "$secret": "vault-key" } }`) now so the payload schema doesn't break later.
 4. **List-valued data / iteration** ("do X for each item") — v2 confirmed, or needed sooner?
 5. **Playbook portability** — exportable/importable across engine instances to share a learned library? Cheap given the file layout; affects ID generation.
-6. **Name** — "engine" is a placeholder. This smells like a Warpmind project; got a name in mind?
+6. ~~**Name** — "engine" is a placeholder; got a name in mind?~~ **Resolved:** **Rote** (DECISIONS #6).
 
